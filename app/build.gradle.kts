@@ -4,6 +4,10 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+base {
+    archivesName.set("PoliSANPlayer-v1.5")
+}
+
 android {
     namespace = "com.aura.player"
     compileSdk = 34
