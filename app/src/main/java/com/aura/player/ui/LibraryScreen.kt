@@ -20,27 +20,38 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
 import androidx.compose.material.icons.automirrored.rounded.Sort
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.CheckBox
+import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Folder
+import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MoreVert
+import androidx.compose.material.icons.rounded.Person
+import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.PlayArrow
 import androidx.compose.material.icons.rounded.Refresh
-import androidx.compose.material.icons.rounded.Search
 import androidx.compose.material.icons.rounded.SdCard
 import androidx.compose.material.icons.rounded.Shuffle
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -51,221 +62,289 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.SolidColor
-import androidx.compose.ui.text.TextStyle
+import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aura.player.data.Track
 import com.aura.player.playback.AudioEngine
 
-private enum class LibTab(val title: String) { TRACKS("Треки"), ALBUMS("Альбомы"), ARTISTS("Исполнители"), FOLDERS("Папки") }
-private enum class Source(val title: String) { ALL("Все"), SD("Карта памяти"), ADDED("Добавленные") }
+private enum class LibTab(val title: String, val icon: ImageVector) {
+    TRACKS("Треки", Icons.Rounded.LibraryMusic),
+    FOLDERS("Папки", Icons.Rounded.Folder),
+    ALBUMS("Альбомы", Icons.Rounded.Album),
+    ARTISTS("Исполнители", Icons.Rounded.Person),
+}
 
 @Composable
 fun LibraryScreen(
     vm: MainViewModel,
-    hasPermission: Boolean,
-    onRequestPermission: () -> Unit,
+    onMenu: () -> Unit,
     onAddFiles: () -> Unit,
     onAddFolder: () -> Unit,
+    onOpenDevicePicker: () -> Unit,
     bottomPadding: Int,
 ) {
     val c = LocalAura.current
     val tracks by vm.tracks.collectAsState()
-    val scanning by vm.scanning.collectAsState()
     val addProgress by vm.addProgress.collectAsState()
     val now by AudioEngine.now.collectAsState()
     val sort by vm.sort.collectAsState()
     var query by rememberSaveable { mutableStateOf("") }
     var tab by rememberSaveable { mutableStateOf(LibTab.TRACKS) }
-    var source by rememberSaveable { mutableStateOf(Source.ALL) }
+    var onlySd by rememberSaveable { mutableStateOf(false) }
     var group by rememberSaveable { mutableStateOf<String?>(null) }
     var sortMenu by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
 
-    val filtered = remember(tracks, query, source) {
+    val sdCount = remember(tracks) { tracks.count { it.onSdCard } }
+    val filtered = remember(tracks, query, onlySd) {
         tracks.filter { t ->
-            (query.isBlank() || t.title.contains(query, true) || t.artist.contains(query, true) || t.album.contains(query, true) || t.folder.contains(query, true)) &&
-                when (source) { Source.ALL -> true; Source.SD -> t.onSdCard; Source.ADDED -> t.userAdded }
+            (!onlySd || t.onSdCard) && (
+                query.isBlank() ||
+                    t.title.contains(query, true) ||
+                    t.artist.contains(query, true) ||
+                    t.album.contains(query, true) ||
+                    t.folder.contains(query, true)
+                )
         }
     }
     val groupKey: (Track) -> String = when (tab) {
         LibTab.ALBUMS -> { t -> t.album.ifBlank { "Без альбома" } }
         LibTab.ARTISTS -> { t -> t.artist }
-        LibTab.FOLDERS -> { t -> t.folder.ifBlank { "Без папки" } }
-        LibTab.TRACKS -> { t -> "" }
+        LibTab.FOLDERS -> { t -> t.folder.ifBlank { "Добавленные файлы" } }
+        LibTab.TRACKS -> { _ -> "" }
     }
     val shown = remember(filtered, tab, group) {
         if (tab == LibTab.TRACKS || group == null) filtered else filtered.filter { groupKey(it) == group }
     }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = bottomPadding.dp)) {
-        item {
-            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 8.dp)) {
-                Column(Modifier.weight(1f)) {
-                    Text("Медиатека", style = MaterialTheme.typography.displaySmall, color = c.text)
-                    Text("${tracks.size} треков" + (if (tracks.any { it.onSdCard }) " · ${tracks.count { it.onSdCard }} на карте памяти" else ""),
-                        style = MaterialTheme.typography.bodyMedium, color = c.textDim)
-                }
-                IconButton(onClick = { vm.rescanFolders() }) {
-                    if (scanning) CircularProgressIndicator(Modifier.size(22.dp), strokeWidth = 2.dp, color = c.accent)
-                    else Icon(Icons.Rounded.Refresh, "Обновить", tint = c.text)
-                }
-                Box {
-                    IconButton(onClick = { sortMenu = true }) { Icon(Icons.AutoMirrored.Rounded.Sort, "Сортировка", tint = c.text) }
-                    DropdownMenu(sortMenu, onDismissRequest = { sortMenu = false }) {
-                        listOf("По названию", "По исполнителю", "По альбому", "По длительности", "По папке").forEachIndexed { i, s ->
-                            DropdownMenuItem(text = { Text((if (i == sort) "✓ " else "    ") + s) }, onClick = { vm.setSort(i); sortMenu = false })
+    Column(Modifier.fillMaxSize().background(c.bg)) {
+        FlatTopBar(
+            title = "Моя музыка",
+            subtitle = if (tracks.isEmpty()) "Плейлист пуст"
+            else "${tracks.size} треков" + if (sdCount > 0) " · $sdCount на SD" else "",
+            onMenu = onMenu,
+            actions = {
+                if (tracks.isNotEmpty()) {
+                    IconButton(onClick = { vm.rescanFolders() }) {
+                        Icon(Icons.Rounded.Refresh, "Обновить папки", tint = c.text)
+                    }
+                    Box {
+                        IconButton(onClick = { sortMenu = true }) {
+                            Icon(Icons.AutoMirrored.Rounded.Sort, "Сортировка", tint = c.text)
                         }
-                        DropdownMenuItem(text = { Text("    Вернуть удалённые из списка") }, onClick = { vm.restoreHidden(); sortMenu = false })
+                        DropdownMenu(sortMenu, onDismissRequest = { sortMenu = false }, containerColor = c.surface) {
+                            listOf("По названию", "По исполнителю", "По альбому", "По длительности", "По папке").forEachIndexed { i, s ->
+                                DropdownMenuItem(
+                                    text = { Text((if (i == sort) "✓ " else "   ") + s, color = if (i == sort) c.accent else c.text) },
+                                    onClick = { vm.setSort(i); sortMenu = false },
+                                )
+                            }
+                            HorizontalDivider(color = c.border)
+                            DropdownMenuItem(
+                                text = { Text("Очистить весь список", color = c.danger) },
+                                leadingIcon = { Icon(Icons.Rounded.DeleteOutline, null, tint = c.danger) },
+                                onClick = { sortMenu = false; confirmClear = true },
+                            )
+                        }
                     }
                 }
-            }
-        }
+            },
+        )
 
-        // ---- поиск ----
-        item {
-            Spacer(Modifier.height(14.dp))
-            SearchField(query, { query = it }, "Песня, исполнитель, альбом, папка")
-        }
-
-        // ---- добавление файлов ----
-        item {
-            Row(Modifier.padding(top = 14.dp), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                AddCard("Добавить файлы", "MP3, FLAC, M4A, OGG, WAV…", Icons.Rounded.Add, Modifier.weight(1f), onAddFiles)
-                AddCard("Добавить папку", "в т.ч. с карты памяти", Icons.Rounded.CreateNewFolder, Modifier.weight(1f), onAddFolder)
-            }
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 14.dp, bottom = bottomPadding.dp),
+        ) {
+            // индикатор чтения файлов
             addProgress?.let { n ->
-                Glass(Modifier.fillMaxWidth().padding(top = 10.dp), padding = PaddingValues(14.dp)) {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.accent)
-                        Spacer(Modifier.width(12.dp))
-                        Text("Читаю файлы… найдено: $n", color = c.text)
+                item {
+                    FlatCard(Modifier.fillMaxWidth().padding(bottom = 12.dp), padding = PaddingValues(14.dp)) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp, color = c.accent)
+                            Spacer(Modifier.width(12.dp))
+                            Text("Добавляю треки… найдено: $n", color = c.text, style = MaterialTheme.typography.titleSmall)
+                        }
                     }
                 }
             }
-        }
 
-        if (!hasPermission) {
-            item {
-                Glass(Modifier.fillMaxWidth().padding(top = 14.dp), onClick = onRequestPermission) {
-                    Column {
-                        Text("🔓 Разрешите доступ к музыке", style = MaterialTheme.typography.titleMedium, color = c.text)
-                        Text("Чтобы автоматически найти все песни в памяти телефона и на карте памяти. Либо добавьте файлы и папки вручную кнопками выше.",
-                            style = MaterialTheme.typography.bodySmall, color = c.textDim, modifier = Modifier.padding(top = 4.dp))
-                    }
-                }
-            }
-        }
-
-        // ---- вкладки ----
-        item {
-            Row(Modifier.padding(top = 16.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                LibTab.entries.forEach { t -> Pill(t.title, tab == t, onClick = { tab = t; group = null }) }
-            }
-            Row(Modifier.padding(top = 8.dp).horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Source.entries.forEach { s ->
-                    Pill(s.title, source == s, onClick = { source = s }, leading = when (s) { Source.SD -> "💾"; Source.ADDED -> "➕"; else -> "🎧" })
-                }
-            }
-        }
-
-        if (tab != LibTab.TRACKS && group == null) {
-            // ---- список групп ----
-            val groups = filtered.groupBy(groupKey).toList().sortedBy { it.first.lowercase() }
-            item { SectionTitle("${tab.title} · ${groups.size}") }
-            items(groups, key = { "g_" + it.first }) { (name, list) ->
-                Row(
-                    Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp)).clickable { group = name }.padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    ArtThumb(list.first().uri, name, size = 58.dp, corner = 16.dp)
-                    Column(Modifier.weight(1f).padding(start = 14.dp)) {
-                        Text(name, style = MaterialTheme.typography.titleMedium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                        Text("${list.size} треков", style = MaterialTheme.typography.bodySmall, color = c.textDim)
-                    }
-                    IconButton(onClick = { vm.play(list, list.first()) }) { Icon(Icons.Rounded.PlayArrow, "Играть", tint = c.accent) }
-                }
-            }
-        } else {
-            item {
-                Row(Modifier.padding(top = 14.dp, bottom = 6.dp), verticalAlignment = Alignment.CenterVertically) {
-                    if (group != null) {
-                        IconButton(onClick = { group = null }) { Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = c.text) }
-                    }
-                    Text(group ?: "Все треки", style = MaterialTheme.typography.titleLarge, color = c.text, modifier = Modifier.weight(1f), maxLines = 1, overflow = TextOverflow.Ellipsis)
-                    if (shown.isNotEmpty()) {
-                        Box(
-                            Modifier.clip(RoundedCornerShape(50)).background(Brush.horizontalGradient(listOf(c.accent, c.accent2)))
-                                .clickable { vm.shuffle(shown) }.padding(horizontal = 14.dp, vertical = 8.dp),
+            if (tracks.isEmpty()) {
+                // ---- чистый экран первого запуска без мусорных 300 файлов ----
+                item {
+                    FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(20.dp)) {
+                        Column(
+                            Modifier.fillMaxWidth(),
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(10.dp),
                         ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Rounded.Shuffle, null, tint = MaterialTheme.colorScheme.onPrimary, modifier = Modifier.size(18.dp))
-                                Spacer(Modifier.width(6.dp))
-                                Text("Перемешать", color = MaterialTheme.colorScheme.onPrimary, style = MaterialTheme.typography.labelLarge)
+                            Box(
+                                Modifier
+                                    .size(64.dp)
+                                    .clip(RoundedCornerShape(16.dp))
+                                    .background(c.accentSoft)
+                                    .border(1.dp, c.accent.copy(alpha = 0.25f), RoundedCornerShape(16.dp)),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Icon(Icons.Rounded.LibraryMusic, null, tint = c.accent, modifier = Modifier.size(30.dp))
+                            }
+                            Text("Пока нет песен", style = MaterialTheme.typography.titleLarge, color = c.text)
+                            Text(
+                                "Добавьте только нужные песни или папки — плеер не загружает все аудиофайлы с телефона автоматически.",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = c.textDim,
+                                textAlign = androidx.compose.ui.text.style.TextAlign.Center,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            FlatPrimaryButton("Добавить файлы", Icons.Rounded.Add, onAddFiles, Modifier.fillMaxWidth())
+                            FlatTonalButton("Добавить папку (телефон / SD)", Icons.Rounded.CreateNewFolder, onAddFolder, Modifier.fillMaxWidth())
+                            FlatTonalButton("Выбрать папки с устройства", Icons.Rounded.PhoneAndroid, onOpenDevicePicker, Modifier.fillMaxWidth())
+                        }
+                    }
+                    FlatCard(Modifier.fillMaxWidth().padding(top = 12.dp), padding = PaddingValues(14.dp)) {
+                        Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                            Icon(Icons.Rounded.SdCard, null, tint = c.accent, modifier = Modifier.size(20.dp))
+                            Column {
+                                Text("Карта памяти и любые форматы", style = MaterialTheme.typography.titleSmall, color = c.text)
+                                Spacer(Modifier.height(2.dp))
+                                Text(
+                                    "В окне выбора папки нажмите ☰ слева сверху, чтобы выбрать SD-карту. Поддерживаются MP3, FLAC, M4A, OGG, WAV и др.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = c.textDim,
+                                )
                             }
                         }
                     }
                 }
-            }
-            if (shown.isEmpty() && !scanning) {
+            } else {
+                // ---- компактная панель добавления ----
                 item {
-                    EmptyState(
-                        if (query.isNotBlank()) "🔍" else "🎶",
-                        if (query.isNotBlank()) "Ничего не найдено" else "Пока пусто",
-                        if (source == Source.SD) "Если песни с карты памяти не появились — нажмите «Добавить папку» и выберите карту памяти в боковом меню выбора файлов."
-                        else "Нажмите «Добавить файлы» или «Добавить папку», чтобы выбрать песни из памяти телефона или с карты памяти.",
-                        Modifier.fillMaxWidth(),
-                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        CompactAddBtn("Файлы", Icons.Rounded.Add, Modifier.weight(1f), onAddFiles)
+                        CompactAddBtn("Папка / SD", Icons.Rounded.CreateNewFolder, Modifier.weight(1f), onAddFolder)
+                        CompactAddBtn("Импорт", Icons.Rounded.PhoneAndroid, Modifier.weight(1f), onOpenDevicePicker)
+                    }
+                    Spacer(Modifier.height(12.dp))
+                    FlatSearchField(query, { query = it }, "Поиск по названию, исполнителю, папке…")
+                    Spacer(Modifier.height(12.dp))
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        LibTab.entries.forEach { t ->
+                            FlatChip(t.title, tab == t, onClick = { tab = t; group = null }, icon = t.icon)
+                        }
+                        if (sdCount > 0) {
+                            FlatChip("SD ($sdCount)", onlySd, onClick = { onlySd = !onlySd }, icon = Icons.Rounded.SdCard)
+                        }
+                    }
+                }
+
+                if (tab != LibTab.TRACKS && group == null) {
+                    val groups = filtered.groupBy(groupKey).toList().sortedBy { it.first.lowercase() }
+                    item { SectionHeader("${tab.title} · ${groups.size}") }
+                    items(groups, key = { "g_" + it.first }) { (name, list) ->
+                        FlatCard(
+                            Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                            shape = RoundedCornerShape(14.dp),
+                            onClick = { group = name },
+                            padding = PaddingValues(10.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                ArtThumb(list.first().uri, name, size = 48.dp, corner = 10.dp)
+                                Column(Modifier.weight(1f).padding(start = 12.dp)) {
+                                    Text(name, style = MaterialTheme.typography.titleSmall, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text("${list.size} треков", style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                                }
+                                IconButton(onClick = { vm.play(list, list.first()) }) {
+                                    Icon(Icons.Rounded.PlayArrow, "Играть", tint = c.accent)
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        Row(
+                            Modifier.fillMaxWidth().padding(top = 14.dp, bottom = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            if (group != null) {
+                                IconButton(onClick = { group = null }, modifier = Modifier.size(36.dp)) {
+                                    Icon(Icons.AutoMirrored.Rounded.ArrowBack, "Назад", tint = c.text)
+                                }
+                                Spacer(Modifier.width(4.dp))
+                            }
+                            Text(
+                                (group ?: "ТРЕКИ").uppercase() + " · ${shown.size}",
+                                style = MaterialTheme.typography.labelSmall,
+                                color = c.textDim,
+                                modifier = Modifier.weight(1f),
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            if (shown.isNotEmpty()) {
+                                FlatChip("Перемешать", selected = false, onClick = { vm.shuffle(shown) }, icon = Icons.Rounded.Shuffle)
+                            }
+                        }
+                    }
+                    if (shown.isEmpty()) {
+                        item {
+                            FlatEmptyState(
+                                icon = Icons.Rounded.FolderOpen,
+                                title = "Ничего не найдено",
+                                text = "Попробуйте изменить запрос или сбросить фильтр.",
+                                modifier = Modifier.fillMaxWidth(),
+                            )
+                        }
+                    }
+                    items(shown, key = { it.uri }) { t ->
+                        TrackRow(
+                            t = t,
+                            playing = now.track?.uri == t.uri,
+                            onClick = { vm.play(shown, t) },
+                            onRemove = { vm.remove(t) },
+                        )
+                        HorizontalDivider(thickness = 1.dp, color = c.border.copy(alpha = 0.55f))
+                    }
                 }
             }
-            items(shown, key = { it.uri }) { t ->
-                TrackRow(t, playing = now.track?.uri == t.uri, onClick = { vm.play(shown, t) }, onRemove = { vm.remove(t) })
-            }
         }
+    }
+
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            containerColor = c.surface,
+            title = { Text("Очистить список?", color = c.text) },
+            text = { Text("Все треки будут убраны из плеера. Сами файлы на телефоне и карте памяти останутся на месте.", color = c.textDim) },
+            confirmButton = {
+                TextButton(onClick = { vm.clearLibrary(); confirmClear = false }) { Text("Очистить", color = c.danger) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Отмена") } },
+        )
     }
 }
 
 @Composable
-fun SearchField(value: String, onChange: (String) -> Unit, hint: String, onSubmit: (() -> Unit)? = null) {
+private fun CompactAddBtn(label: String, icon: ImageVector, modifier: Modifier, onClick: () -> Unit) {
     val c = LocalAura.current
-    Glass(Modifier.fillMaxWidth(), shape = RoundedCornerShape(18.dp), padding = PaddingValues(horizontal = 14.dp, vertical = 12.dp)) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Rounded.Search, null, tint = c.textDim)
-            Spacer(Modifier.width(10.dp))
-            Box(Modifier.weight(1f)) {
-                if (value.isEmpty()) Text(hint, color = c.textDim, style = MaterialTheme.typography.bodyLarge, maxLines = 1)
-                BasicTextField(
-                    value, onChange, singleLine = true,
-                    textStyle = TextStyle(color = c.text, fontSize = 16.sp),
-                    cursorBrush = SolidColor(c.accent),
-                    keyboardOptions = androidx.compose.foundation.text.KeyboardOptions(imeAction = androidx.compose.ui.text.input.ImeAction.Search),
-                    keyboardActions = androidx.compose.foundation.text.KeyboardActions(onSearch = { onSubmit?.invoke() }),
-                    modifier = Modifier.fillMaxWidth(),
-                )
-            }
-            if (value.isNotEmpty()) {
-                Icon(Icons.Rounded.Close, "Очистить", tint = c.textDim, modifier = Modifier.size(20.dp).clickable { onChange("") })
-            }
-        }
-    }
-}
-
-@Composable
-private fun AddCard(title: String, sub: String, icon: androidx.compose.ui.graphics.vector.ImageVector, modifier: Modifier, onClick: () -> Unit) {
-    val c = LocalAura.current
-    Glass(modifier, onClick = onClick, padding = PaddingValues(14.dp)) {
-        Column {
-            Box(
-                Modifier.size(38.dp).clip(RoundedCornerShape(12.dp)).background(Brush.linearGradient(listOf(c.accent, c.accent2))),
-                contentAlignment = Alignment.Center,
-            ) { Icon(icon, null, tint = MaterialTheme.colorScheme.onPrimary) }
-            Spacer(Modifier.height(10.dp))
-            Text(title, style = MaterialTheme.typography.titleSmall, color = c.text)
-            Text(sub, style = MaterialTheme.typography.bodySmall, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
-        }
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        modifier
+            .clip(shape)
+            .background(c.surface)
+            .border(1.dp, c.border, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 10.dp, vertical = 10.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = c.accent, modifier = Modifier.size(16.dp))
+        Spacer(Modifier.width(5.dp))
+        Text(label, style = MaterialTheme.typography.labelMedium, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
 }
 
@@ -274,42 +353,168 @@ fun TrackRow(t: Track, playing: Boolean, onClick: () -> Unit, onRemove: () -> Un
     val c = LocalAura.current
     var menu by remember { mutableStateOf(false) }
     Row(
-        Modifier.fillMaxWidth().clip(RoundedCornerShape(18.dp))
-            .background(if (playing) c.accent.copy(alpha = 0.14f) else Color.Transparent)
-            .clickable(onClick = onClick).padding(vertical = 7.dp, horizontal = 6.dp),
+        Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(10.dp))
+            .background(if (playing) c.accentSoft else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp, horizontal = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(contentAlignment = Alignment.Center) {
-            ArtThumb(t.uri, t.album.ifBlank { t.title })
-            if (playing) Box(Modifier.size(52.dp).clip(RoundedCornerShape(14.dp)).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.GraphicEq, null, tint = Color.White)
+            ArtThumb(t.uri, t.album.ifBlank { t.title }, size = 46.dp, corner = 10.dp)
+            if (playing) {
+                Box(
+                    Modifier.size(46.dp).clip(RoundedCornerShape(10.dp)).background(Color.Black.copy(alpha = 0.5f)),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(Icons.Rounded.GraphicEq, null, tint = Color.White, modifier = Modifier.size(22.dp))
+                }
             }
         }
-        Column(Modifier.weight(1f).padding(start = 14.dp)) {
-            Text(t.title, style = MaterialTheme.typography.titleSmall, color = if (playing) c.accent else c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+        Column(Modifier.weight(1f).padding(start = 12.dp, end = 6.dp)) {
+            Text(
+                t.title,
+                style = MaterialTheme.typography.titleSmall,
+                color = if (playing) c.accent else c.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            Spacer(Modifier.height(2.dp))
             Row(verticalAlignment = Alignment.CenterVertically) {
                 if (t.onSdCard) {
-                    Icon(Icons.Rounded.SdCard, "Карта памяти", tint = c.accent2, modifier = Modifier.size(13.dp))
+                    Icon(Icons.Rounded.SdCard, "Карта памяти", tint = c.accent, modifier = Modifier.size(12.dp))
                     Spacer(Modifier.width(4.dp))
                 }
                 Text(
                     listOf(t.artist, fmtTime(t.durationMs).takeIf { t.durationMs > 0 }).filterNotNull().joinToString(" · "),
-                    style = MaterialTheme.typography.bodySmall, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.textDim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
             }
         }
         if (t.format.isNotBlank()) {
             Text(
-                t.format, fontSize = 10.sp, color = c.textDim,
-                modifier = Modifier.border(1.dp, c.glassBorder, RoundedCornerShape(6.dp)).padding(horizontal = 5.dp, vertical = 2.dp),
+                t.format,
+                fontSize = 10.sp,
+                fontWeight = FontWeight.Bold,
+                color = c.textDim,
+                modifier = Modifier
+                    .clip(RoundedCornerShape(6.dp))
+                    .background(c.surface2)
+                    .border(1.dp, c.border, RoundedCornerShape(6.dp))
+                    .padding(horizontal = 6.dp, vertical = 2.dp),
             )
         }
         Box {
-            IconButton(onClick = { menu = true }) { Icon(Icons.Rounded.MoreVert, "Ещё", tint = c.textDim) }
-            DropdownMenu(menu, onDismissRequest = { menu = false }) {
+            IconButton(onClick = { menu = true }, modifier = Modifier.size(36.dp)) {
+                Icon(Icons.Rounded.MoreVert, "Ещё", tint = c.textDim, modifier = Modifier.size(20.dp))
+            }
+            DropdownMenu(menu, onDismissRequest = { menu = false }, containerColor = c.surface) {
                 DropdownMenuItem(text = { Text("Играть следующим") }, onClick = { AudioEngine.playNext(t); menu = false })
                 DropdownMenuItem(text = { Text("Добавить в очередь") }, onClick = { AudioEngine.addToQueue(t); menu = false })
-                DropdownMenuItem(text = { Text("Убрать из медиатеки") }, onClick = { onRemove(); menu = false })
+                HorizontalDivider(color = c.border)
+                DropdownMenuItem(text = { Text("Убрать из списка", color = c.danger) }, onClick = { onRemove(); menu = false })
+            }
+        }
+    }
+}
+
+// ===================== Окно выборочного импорта папок с устройства =====================
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun DeviceFolderPickerSheet(
+    vm: MainViewModel,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAura.current
+    val folders by vm.pickerFolders.collectAsState()
+    val loading by vm.pickerLoading.collectAsState()
+    var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+
+    val selectedTracks = remember(folders, selectedKeys) {
+        folders.filter { it.key in selectedKeys }.flatMap { it.tracks }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surface) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 20.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text("Выбрать папки с устройства", style = MaterialTheme.typography.titleLarge, color = c.text)
+                    Text("Отметьте только нужные папки с музыкой", style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                }
+                IconButton(onClick = { vm.loadDeviceFolders() }) {
+                    Icon(Icons.Rounded.Refresh, "Обновить", tint = c.text)
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            if (loading) {
+                Box(Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        CircularProgressIndicator(color = c.accent)
+                        Text("Ищу папки с музыкой…", color = c.textDim, style = MaterialTheme.typography.bodyMedium)
+                    }
+                }
+            } else if (folders.isEmpty()) {
+                FlatEmptyState(
+                    icon = Icons.Rounded.FolderOpen,
+                    title = "Папки не найдены",
+                    text = "На устройстве не найдено аудиофайлов, либо доступ к памяти не выдан. Можно выбрать файлы кнопкой «Добавить папку».",
+                    modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                LazyColumn(Modifier.fillMaxWidth().height(340.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(folders, key = { it.key }) { f ->
+                        val checked = f.key in selectedKeys
+                        FlatCard(
+                            Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(12.dp),
+                            color = if (checked) c.accentSoft else c.surface2,
+                            onClick = {
+                                selectedKeys = if (checked) selectedKeys - f.key else selectedKeys + f.key
+                            },
+                            padding = PaddingValues(12.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    if (checked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
+                                    null,
+                                    tint = if (checked) c.accent else c.textDim,
+                                )
+                                Spacer(Modifier.width(12.dp))
+                                Icon(
+                                    if (f.onSdCard) Icons.Rounded.SdCard else Icons.Rounded.Folder,
+                                    null,
+                                    tint = if (f.onSdCard) c.accent else c.textDim,
+                                    modifier = Modifier.size(20.dp),
+                                )
+                                Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                    Text(f.name, style = MaterialTheme.typography.titleSmall, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        "${f.tracks.size} треков" + if (f.onSdCard) " · Карта памяти" else " · Телефон",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textDim,
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+                Spacer(Modifier.height(14.dp))
+                FlatPrimaryButton(
+                    text = if (selectedTracks.isEmpty()) "Выберите папки выше" else "Добавить выбранные (${selectedTracks.size})",
+                    icon = Icons.Rounded.Add,
+                    onClick = {
+                        if (selectedTracks.isNotEmpty()) {
+                            vm.importTracks(selectedTracks)
+                            onDismiss()
+                        }
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                )
             }
         }
     }

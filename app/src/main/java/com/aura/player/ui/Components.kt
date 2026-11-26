@@ -1,11 +1,5 @@
 package com.aura.player.ui
 
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.rememberInfiniteTransition
-import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
@@ -19,20 +13,47 @@ import androidx.compose.foundation.layout.BoxScope
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.AccountBalance
+import androidx.compose.material.icons.rounded.Air
+import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Call
+import androidx.compose.material.icons.rounded.ChildCare
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Landscape
+import androidx.compose.material.icons.rounded.LocalFireDepartment
+import androidx.compose.material.icons.rounded.Menu
+import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.Pets
+import androidx.compose.material.icons.rounded.Radio
+import androidx.compose.material.icons.rounded.Search
+import androidx.compose.material.icons.rounded.SmartToy
+import androidx.compose.material.icons.rounded.Terrain
+import androidx.compose.material.icons.rounded.Water
+import androidx.compose.material.icons.rounded.Whatshot
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -43,26 +64,31 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Shape
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.aura.player.data.ArtLoader
-import com.aura.player.data.Country
 import com.aura.player.data.Station
 import com.aura.player.playback.AudioEngine
+import com.aura.player.playback.VoiceEffect
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlin.math.PI
+import kotlin.math.abs
 import kotlin.math.cos
 import kotlin.math.hypot
 import kotlin.math.ln
@@ -70,69 +96,306 @@ import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.sin
-import kotlin.math.sqrt
 
-// ===================== Фон «живой градиент» =====================
+// ===================== Flat Top Bar =====================
 
 @Composable
-fun AuraBackground(modifier: Modifier = Modifier, intensity: Float = 1f) {
+fun FlatTopBar(
+    title: String,
+    subtitle: String? = null,
+    onMenu: () -> Unit,
+    actions: @Composable RowScope.() -> Unit = {},
+) {
     val c = LocalAura.current
-    val tr = rememberInfiniteTransition(label = "bg")
-    val t by tr.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(26000, easing = LinearEasing)), label = "t")
-    val alpha = (if (c.dark) 0.33f else 0.22f) * intensity
-    Canvas(modifier.fillMaxSize()) {
-        drawRect(c.bg)
-        val r = max(size.width, size.height) * 0.75f
-        fun blob(color: Color, cx: Float, cy: Float, rad: Float) {
-            drawCircle(Brush.radialGradient(listOf(color.copy(alpha = alpha), Color.Transparent), Offset(cx, cy), rad), rad, Offset(cx, cy))
+    Column(Modifier.fillMaxWidth().background(c.bg)) {
+        Row(
+            Modifier.fillMaxWidth().padding(start = 6.dp, end = 10.dp, top = 6.dp, bottom = 6.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            IconButton(onClick = onMenu) {
+                Icon(Icons.Rounded.Menu, "Меню", tint = c.text)
+            }
+            Column(Modifier.weight(1f).padding(start = 4.dp)) {
+                Text(
+                    title,
+                    style = MaterialTheme.typography.headlineSmall,
+                    color = c.text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                if (!subtitle.isNullOrBlank()) {
+                    Text(
+                        subtitle,
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textDim,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+            actions()
         }
-        blob(c.accent, size.width * (0.2f + 0.15f * cos(t)), size.height * (0.12f + 0.08f * sin(t * 2)), r)
-        blob(c.accent2, size.width * (0.9f + 0.1f * sin(t)), size.height * (0.45f + 0.12f * cos(t)), r * 0.8f)
-        blob(c.accent3, size.width * (0.3f + 0.2f * sin(t + 1)), size.height * (0.95f + 0.05f * cos(t * 2)), r * 0.9f)
+        HorizontalDivider(thickness = 1.dp, color = c.border)
     }
 }
 
-// ===================== Стекло =====================
+// ===================== Flat Surfaces & Controls =====================
 
 @Composable
-fun Glass(
+fun FlatCard(
     modifier: Modifier = Modifier,
-    shape: Shape = RoundedCornerShape(24.dp),
+    shape: Shape = RoundedCornerShape(16.dp),
+    color: Color? = null,
     onClick: (() -> Unit)? = null,
     padding: PaddingValues = PaddingValues(16.dp),
     content: @Composable BoxScope.() -> Unit,
 ) {
     val c = LocalAura.current
-    var m = modifier.clip(shape).background(c.glass).border(1.dp, c.glassBorder, shape)
+    var m = modifier
+        .clip(shape)
+        .background(color ?: c.surface)
+        .border(1.dp, c.border, shape)
     if (onClick != null) m = m.clickable(onClick = onClick)
     Box(m.padding(padding), content = content)
 }
 
 @Composable
-fun Pill(text: String, selected: Boolean, onClick: () -> Unit, modifier: Modifier = Modifier, leading: String? = null) {
+fun FlatChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+    icon: ImageVector? = null,
+    prefix: String? = null,
+) {
     val c = LocalAura.current
-    val shape = RoundedCornerShape(50)
-    val bg = if (selected) Brush.horizontalGradient(listOf(c.accent, c.accent2)) else Brush.linearGradient(listOf(c.glass, c.glass))
+    val shape = RoundedCornerShape(10.dp)
     Row(
         modifier
             .clip(shape)
-            .background(bg)
-            .border(1.dp, if (selected) Color.Transparent else c.glassBorder, shape)
+            .background(if (selected) c.accent else c.surface2)
+            .border(1.dp, if (selected) c.accent else c.border, shape)
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 8.dp),
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
         horizontalArrangement = Arrangement.spacedBy(6.dp),
     ) {
-        if (leading != null) Text(leading, fontSize = 15.sp)
+        if (icon != null) {
+            Icon(
+                icon,
+                null,
+                tint = if (selected) c.onAccent else c.textDim,
+                modifier = Modifier.size(16.dp),
+            )
+        }
+        if (prefix != null) {
+            Text(prefix, fontSize = 13.sp)
+        }
         Text(
-            text, style = MaterialTheme.typography.labelLarge,
-            color = if (selected) MaterialTheme.colorScheme.onPrimary else c.text,
+            text,
+            style = MaterialTheme.typography.labelLarge,
+            color = if (selected) c.onAccent else c.text,
             maxLines = 1,
         )
     }
 }
 
-// ===================== Обложки =====================
+@Composable
+fun FlatSegmentedControl(
+    options: List<String>,
+    selectedIndex: Int,
+    onSelect: (Int) -> Unit,
+    modifier: Modifier = Modifier,
+    icons: List<ImageVector>? = null,
+) {
+    val c = LocalAura.current
+    val trackShape = RoundedCornerShape(12.dp)
+    val itemShape = RoundedCornerShape(9.dp)
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(trackShape)
+            .background(c.surface2)
+            .border(1.dp, c.border, trackShape)
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(3.dp),
+    ) {
+        options.forEachIndexed { i, label ->
+            val sel = i == selectedIndex
+            Row(
+                Modifier
+                    .weight(1f)
+                    .clip(itemShape)
+                    .background(if (sel) c.surface else Color.Transparent)
+                    .then(if (sel) Modifier.border(1.dp, c.border, itemShape) else Modifier)
+                    .clickable { onSelect(i) }
+                    .padding(vertical = 9.dp, horizontal = 8.dp),
+                horizontalArrangement = Arrangement.Center,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                val ic = icons?.getOrNull(i)
+                if (ic != null) {
+                    Icon(ic, null, tint = if (sel) c.accent else c.textDim, modifier = Modifier.size(16.dp))
+                    Spacer(Modifier.width(6.dp))
+                }
+                Text(
+                    label,
+                    style = MaterialTheme.typography.labelLarge,
+                    color = if (sel) c.text else c.textDim,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+fun FlatPrimaryButton(
+    text: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAura.current
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        modifier
+            .clip(shape)
+            .background(c.accent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 13.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = c.onAccent, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.labelLarge, color = c.onAccent, maxLines = 1)
+    }
+}
+
+@Composable
+fun FlatTonalButton(
+    text: String,
+    icon: ImageVector,
+    onClick: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val c = LocalAura.current
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        modifier
+            .clip(shape)
+            .background(c.surface2)
+            .border(1.dp, c.border, shape)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp, vertical = 12.dp),
+        horizontalArrangement = Arrangement.Center,
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, null, tint = c.accent, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(text, style = MaterialTheme.typography.labelLarge, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+fun FlatSearchField(
+    value: String,
+    onChange: (String) -> Unit,
+    hint: String,
+    modifier: Modifier = Modifier,
+    onSubmit: (() -> Unit)? = null,
+) {
+    val c = LocalAura.current
+    val shape = RoundedCornerShape(12.dp)
+    Row(
+        modifier
+            .fillMaxWidth()
+            .clip(shape)
+            .background(c.surface2)
+            .border(1.dp, c.border, shape)
+            .padding(horizontal = 12.dp, vertical = 11.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.Rounded.Search, null, tint = c.textDim, modifier = Modifier.size(20.dp))
+        Spacer(Modifier.width(10.dp))
+        Box(Modifier.weight(1f)) {
+            if (value.isEmpty()) {
+                Text(hint, color = c.textDim, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+            BasicTextField(
+                value, onChange, singleLine = true,
+                textStyle = TextStyle(color = c.text, fontSize = 15.sp),
+                cursorBrush = SolidColor(c.accent),
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                keyboardActions = KeyboardActions(onSearch = { onSubmit?.invoke() }),
+                modifier = Modifier.fillMaxWidth(),
+            )
+        }
+        if (value.isNotEmpty()) {
+            Icon(Icons.Rounded.Close, "Очистить", tint = c.textDim, modifier = Modifier.size(20.dp).clickable { onChange("") })
+        }
+    }
+}
+
+@Composable
+fun SectionHeader(
+    text: String,
+    modifier: Modifier = Modifier,
+    action: (@Composable () -> Unit)? = null,
+) {
+    val c = LocalAura.current
+    Row(
+        modifier.fillMaxWidth().padding(top = 18.dp, bottom = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(
+            text.uppercase(),
+            style = MaterialTheme.typography.labelSmall,
+            color = c.textDim,
+            modifier = Modifier.weight(1f),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        action?.invoke()
+    }
+}
+
+@Composable
+fun FlatEmptyState(
+    icon: ImageVector,
+    title: String,
+    text: String,
+    modifier: Modifier = Modifier,
+    action: (@Composable () -> Unit)? = null,
+) {
+    val c = LocalAura.current
+    Column(
+        modifier.padding(horizontal = 24.dp, vertical = 32.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(10.dp),
+    ) {
+        Box(
+            Modifier
+                .size(64.dp)
+                .clip(RoundedCornerShape(18.dp))
+                .background(c.accentSoft)
+                .border(1.dp, c.accent.copy(alpha = 0.25f), RoundedCornerShape(18.dp)),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, null, tint = c.accent, modifier = Modifier.size(30.dp))
+        }
+        Text(title, style = MaterialTheme.typography.titleLarge, color = c.text, textAlign = TextAlign.Center)
+        Text(text, style = MaterialTheme.typography.bodyMedium, color = c.textDim, textAlign = TextAlign.Center)
+        if (action != null) {
+            Spacer(Modifier.height(4.dp))
+            action()
+        }
+    }
+}
+
+// ===================== Обложки и иконки =====================
 
 @Composable
 fun rememberArt(uri: String?, size: Int): ImageBitmap? {
@@ -143,40 +406,79 @@ fun rememberArt(uri: String?, size: Int): ImageBitmap? {
     return state.value
 }
 
+private val flatSeeds = listOf(
+    Color(0xFF2563EB), Color(0xFF7C3AED), Color(0xFF059669), Color(0xFFDC2626),
+    Color(0xFFD97706), Color(0xFF0891B2), Color(0xFFDB2777), Color(0xFF4F46E5),
+)
+
+fun flatSeedColor(seed: String): Color = flatSeeds[(seed.hashCode() and 0x7fffffff) % flatSeeds.size]
+
 @Composable
-fun ArtThumb(uri: String?, seed: String, modifier: Modifier = Modifier, size: Dp = 52.dp, corner: Dp = 14.dp) {
+fun ArtThumb(uri: String?, seed: String, modifier: Modifier = Modifier, size: Dp = 48.dp, corner: Dp = 10.dp) {
     val art = rememberArt(uri, 160)
     val shape = RoundedCornerShape(corner)
-    Box(modifier.size(size).clip(shape), contentAlignment = Alignment.Center) {
+    val c = LocalAura.current
+    Box(
+        modifier.size(size).clip(shape).border(1.dp, c.border, shape),
+        contentAlignment = Alignment.Center,
+    ) {
         if (art != null) {
             Image(art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
         } else {
-            Box(Modifier.fillMaxSize().background(seedGradient(seed)), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.MusicNote, null, tint = Color.White.copy(alpha = 0.9f), modifier = Modifier.size(size * 0.45f))
+            val base = flatSeedColor(seed)
+            Box(Modifier.fillMaxSize().background(base.copy(alpha = 0.18f)), contentAlignment = Alignment.Center) {
+                Icon(Icons.Rounded.MusicNote, null, tint = base, modifier = Modifier.size(size * 0.46f))
             }
         }
     }
 }
 
-fun seedGradient(seed: String): Brush {
-    val h = (seed.hashCode() and 0x7fffffff) % 360
-    val c1 = Color.hsv(h.toFloat(), 0.65f, 0.85f)
-    val c2 = Color.hsv(((h + 50) % 360).toFloat(), 0.75f, 0.55f)
-    return Brush.linearGradient(listOf(c1, c2))
+@Composable
+fun StationLogo(st: Station, modifier: Modifier = Modifier, size: Dp = 50.dp) {
+    val shape = RoundedCornerShape(12.dp)
+    val base = flatSeedColor(st.name)
+    val initials = st.name.split(' ', '-', '.').filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1) }.uppercase()
+    Box(
+        modifier.size(size).clip(shape).background(base.copy(alpha = 0.16f)).border(1.dp, base.copy(alpha = 0.35f), shape),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (initials.isNotBlank()) {
+            Text(initials, color = base, fontWeight = FontWeight.ExtraBold, fontSize = (size.value * 0.34f).sp, maxLines = 1)
+        } else {
+            Icon(Icons.Rounded.Radio, null, tint = base, modifier = Modifier.size(size * 0.45f))
+        }
+        if (st.country.isNotBlank()) {
+            Text(
+                st.country,
+                fontSize = 8.sp,
+                fontWeight = FontWeight.Black,
+                color = Color.White,
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .padding(3.dp)
+                    .clip(RoundedCornerShape(4.dp))
+                    .background(base)
+                    .padding(horizontal = 3.dp, vertical = 1.dp),
+            )
+        }
+    }
 }
 
-@Composable
-fun StationLogo(st: Station, modifier: Modifier = Modifier, size: Dp = 56.dp) {
-    val shape = RoundedCornerShape(18.dp)
-    val initials = st.name.split(' ', '-', '.').filter { it.isNotBlank() }.take(2).joinToString("") { it.take(1) }.uppercase()
-    Box(modifier.size(size).clip(shape).background(seedGradient(st.name)), contentAlignment = Alignment.Center) {
-        Text(initials.ifBlank { "FM" }, color = Color.White, fontWeight = FontWeight.Black, fontSize = (size.value * 0.32f).sp, maxLines = 1)
-        Text(
-            Country.of(st.country)?.flag ?: "📻",
-            fontSize = (size.value * 0.22f).sp,
-            modifier = Modifier.align(Alignment.BottomEnd).padding(3.dp),
-        )
-    }
+fun voiceIcon(v: VoiceEffect): ImageVector = when (v) {
+    VoiceEffect.NORMAL -> Icons.Rounded.MusicNote
+    VoiceEffect.CHILD -> Icons.Rounded.ChildCare
+    VoiceEffect.HELIUM -> Icons.Rounded.Air
+    VoiceEffect.CHIPMUNK -> Icons.Rounded.Pets
+    VoiceEffect.ANGRY -> Icons.Rounded.Whatshot
+    VoiceEffect.DEMON -> Icons.Rounded.LocalFireDepartment
+    VoiceEffect.GIANT -> Icons.Rounded.Terrain
+    VoiceEffect.ROBOT -> Icons.Rounded.SmartToy
+    VoiceEffect.CAVE -> Icons.Rounded.Landscape
+    VoiceEffect.HALL -> Icons.Rounded.AccountBalance
+    VoiceEffect.PHONE -> Icons.Rounded.Call
+    VoiceEffect.UNDERWATER -> Icons.Rounded.Water
+    VoiceEffect.VINYL -> Icons.Rounded.Album
+    VoiceEffect.KARAOKE -> Icons.Rounded.MicOff
 }
 
 fun fmtTime(ms: Long): String {
@@ -188,7 +490,7 @@ fun fmtTime(ms: Long): String {
     return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
 }
 
-// ===================== Вертикальный слайдер (эквалайзер) =====================
+// ===================== Вертикальный flat-слайдер эквалайзера =====================
 
 @Composable
 fun VerticalSlider(
@@ -214,25 +516,33 @@ fun VerticalSlider(
                 }
             }
     ) {
-        val w = 6.dp.toPx()
+        val w = 4.dp.toPx()
         val x = size.width / 2
-        val top = 10.dp.toPx()
-        val bottom = size.height - 10.dp.toPx()
+        val top = 12.dp.toPx()
+        val bottom = size.height - 12.dp.toPx()
         val h = bottom - top
-        drawRoundRect(c.text.copy(alpha = 0.12f), Offset(x - w / 2, top), Size(w, h), CornerRadius(w))
         val zeroY = top + h * (1f - (0f - range.start) / span)
         val vy = top + h * (1f - (value - range.start) / span)
         val alpha = if (enabled) 1f else 0.35f
+
+        // 0 дБ отметка
+        drawLine(c.border, Offset(x - 10.dp.toPx(), zeroY), Offset(x + 10.dp.toPx(), zeroY), 1.dp.toPx())
+        // трек
+        drawRoundRect(c.surface2, Offset(x - w / 2, top), Size(w, h), CornerRadius(w))
+        // активная часть
         drawRoundRect(
-            Brush.verticalGradient(listOf(c.accent2.copy(alpha = alpha), c.accent.copy(alpha = alpha))),
-            Offset(x - w / 2, min(zeroY, vy)), Size(w, kotlin.math.abs(zeroY - vy).coerceAtLeast(1f)), CornerRadius(w),
+            c.accent.copy(alpha = alpha),
+            Offset(x - w / 2, min(zeroY, vy)),
+            Size(w, abs(zeroY - vy).coerceAtLeast(1f)),
+            CornerRadius(w),
         )
-        drawCircle(Color.White.copy(alpha = alpha), 9.dp.toPx(), Offset(x, vy))
-        drawCircle(c.accent.copy(alpha = alpha), 5.dp.toPx(), Offset(x, vy))
+        // плоский бегунок
+        drawCircle(c.surface, 8.dp.toPx(), Offset(x, vy))
+        drawCircle(c.accent.copy(alpha = alpha), 6.dp.toPx(), Offset(x, vy))
     }
 }
 
-// ===================== Визуализатор спектра =====================
+// ===================== Flat-визуализатор спектра =====================
 
 private class Spectrum(val bands: Int) {
     private val n = 1024
@@ -299,13 +609,18 @@ private class Spectrum(val bands: Int) {
     }
 }
 
-/** Полоски спектра. Возвращает «энергию» баса через onBeat — для пульсации обложки */
 @Composable
-fun SpectrumBars(playing: Boolean, modifier: Modifier = Modifier, bands: Int = 40, mirrored: Boolean = true, onBeat: (Float) -> Unit = {}) {
+fun SpectrumBars(
+    playing: Boolean,
+    modifier: Modifier = Modifier,
+    bands: Int = 36,
+    mirrored: Boolean = true,
+    onBeat: (Float) -> Unit = {},
+) {
     val c = LocalAura.current
-    val spec = remember { Spectrum(bands) }
-    var tick by remember { mutableStateOf(0L) }
-    LaunchedEffect(playing) {
+    val spec = remember(bands) { Spectrum(bands) }
+    var tick by remember { mutableLongStateOf(0L) }
+    LaunchedEffect(playing, bands) {
         while (true) {
             withFrameNanos { tick = it }
             val fresh = System.nanoTime() - AudioEngine.fx.lastWriteNs < 400_000_000L
@@ -315,43 +630,21 @@ fun SpectrumBars(playing: Boolean, modifier: Modifier = Modifier, bands: Int = 4
         }
     }
     Canvas(modifier) {
-        tick // перерисовка каждый кадр
+        tick
         val gap = size.width / bands
-        val bw = gap * 0.55f
-        val brush = Brush.verticalGradient(listOf(c.accent2, c.accent, c.accent3.copy(alpha = 0.6f)))
+        val bw = (gap * 0.52f).coerceAtLeast(2f)
         for (i in 0 until bands) {
-            val v = spec.levels[i].coerceAtLeast(0.03f)
-            val h = v * size.height * (if (mirrored) 0.5f else 1f)
+            val v = spec.levels[i].coerceAtLeast(0.05f)
+            val h = v * size.height * (if (mirrored) 0.48f else 0.95f)
             val x = i * gap + (gap - bw) / 2
             val y = if (mirrored) size.height / 2 - h else size.height - h
-            drawRoundRect(brush, Offset(x, y), Size(bw, if (mirrored) h * 2 else h), CornerRadius(bw / 2))
+            val col = if (v > 0.65f) c.accent else c.accent.copy(alpha = 0.45f + v * 0.5f)
+            drawRoundRect(col, Offset(x, y), Size(bw, if (mirrored) h * 2 else h), CornerRadius(bw / 2))
         }
     }
 }
 
 @Composable
-fun SectionTitle(text: String, modifier: Modifier = Modifier, action: (@Composable () -> Unit)? = null) {
-    Row(modifier.padding(top = 18.dp, bottom = 10.dp), verticalAlignment = Alignment.CenterVertically) {
-        Text(text, style = MaterialTheme.typography.titleLarge, color = LocalAura.current.text, modifier = Modifier.weight(1f),
-            maxLines = 1, overflow = TextOverflow.Ellipsis)
-        action?.invoke()
-    }
-}
-
-@Composable
-fun EmptyState(emoji: String, title: String, text: String, modifier: Modifier = Modifier, action: (@Composable () -> Unit)? = null) {
-    Column(modifier.padding(32.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
-        Text(emoji, fontSize = 52.sp)
-        Text(title, style = MaterialTheme.typography.titleLarge, color = LocalAura.current.text)
-        Text(text, style = MaterialTheme.typography.bodyMedium, color = LocalAura.current.textDim, textAlign = androidx.compose.ui.text.style.TextAlign.Center)
-        action?.invoke()
-    }
-}
-
-@Composable
-fun Dot(color: Color, size: Dp = 8.dp) {
+fun StatusDot(color: Color, size: Dp = 8.dp) {
     Box(Modifier.size(size).clip(CircleShape).background(color))
 }
-
-@Suppress("unused")
-private fun sq(x: Float) = sqrt(x)

@@ -13,22 +13,33 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.rounded.BatteryChargingFull
+import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.Palette
+import androidx.compose.material.icons.rounded.SdCard
+import androidx.compose.material.icons.rounded.Tune
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -38,132 +49,241 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import com.aura.player.playback.AudioEngine
 
 @Composable
-fun SettingsScreen(vm: MainViewModel, bottomPadding: Int) {
+fun SettingsScreen(
+    vm: MainViewModel,
+    section: Int,
+    onSectionChange: (Int) -> Unit,
+    onMenu: () -> Unit,
+    bottomPadding: Int,
+) {
     val c = LocalAura.current
     val ctx = LocalContext.current
     val s by vm.settings.collectAsState()
+    val tracks by vm.tracks.collectAsState()
     val sleepAt by AudioEngine.sleepAt.collectAsState()
     var sleepDialog by remember { mutableStateOf(false) }
+    var confirmClear by remember { mutableStateOf(false) }
 
-    LazyColumn(Modifier.fillMaxSize(), contentPadding = PaddingValues(start = 18.dp, end = 18.dp, bottom = bottomPadding.dp)) {
-        item {
-            Text("Настройки", style = MaterialTheme.typography.displaySmall, color = c.text, modifier = Modifier.padding(top = 8.dp))
+    Column(Modifier.fillMaxSize().background(c.bg)) {
+        FlatTopBar(
+            title = if (section == 0) "Темы и вид" else "Настройки",
+            subtitle = if (section == 0) "Тема: ${s.theme.title}" else "Плеер и воспроизведение",
+            onMenu = onMenu,
+        )
+
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+            FlatSegmentedControl(
+                options = listOf("Темы и вид", "Общие"),
+                selectedIndex = section,
+                onSelect = onSectionChange,
+                icons = listOf(Icons.Rounded.Palette, Icons.Rounded.Tune),
+            )
         }
 
-        // ---- темы ----
-        item { SectionTitle("🎨 Тема оформления") }
-        item {
-            val themes = AuraTheme.entries.filter { it != AuraTheme.DYNAMIC || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S }
-            Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                themes.chunked(3).forEach { row ->
-                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-                        row.forEach { t -> ThemeTile(t, s.theme == t, Modifier.weight(1f)) { vm.setTheme(t) } }
-                        repeat(3 - row.size) { Spacer(Modifier.weight(1f)) }
-                    }
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = bottomPadding.dp),
+        ) {
+            if (section == 0) {
+                // ===================== ТЕМЫ И ВИД =====================
+                item {
+                    SectionHeader("Режим яркости")
+                    FlatSegmentedControl(
+                        options = listOf("Система", "Тёмная", "Светлая"),
+                        selectedIndex = s.darkMode,
+                        onSelect = { vm.setDarkMode(it) },
+                    )
                 }
-            }
-        }
-        item {
-            Glass(Modifier.fillMaxWidth().padding(top = 14.dp)) {
-                Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                    Text("Режим", style = MaterialTheme.typography.titleSmall, color = c.text)
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Pill("Как в системе", s.darkMode == 0, { vm.setDarkMode(0) }, leading = "📱")
-                        Pill("Тёмный", s.darkMode == 1, { vm.setDarkMode(1) }, leading = "🌙")
-                        Pill("Светлый", s.darkMode == 2, { vm.setDarkMode(2) }, leading = "☀️")
-                    }
-                    ToggleRow("Чёрный AMOLED-фон", "Экономит заряд на OLED-экранах", s.amoled) { vm.setAmoled(it) }
-                    ToggleRow("Цвет из обложки", "Интерфейс подстраивается под обложку песни", s.adaptive) { vm.setAdaptive(it) }
-                    ToggleRow("Вид кассеты в плеере", "Ретро-кассета с обложкой на наклейке вместо большой обложки", s.cassette) { vm.setCassette(it) }
-                }
-            }
-        }
-
-        // ---- воспроизведение ----
-        item { SectionTitle("▶️ Воспроизведение") }
-        item {
-            Glass(Modifier.fillMaxWidth()) {
-                Column(verticalArrangement = Arrangement.spacedBy(14.dp)) {
-                    SettingRow("Таймер сна", if (sleepAt > 0) "Включён" else "Выключен") { sleepDialog = true }
-                    SettingRow("Работа в фоне", "Если музыка останавливается при выключенном экране — снимите для приложения ограничения батареи") {
-                        runCatching {
-                            ctx.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                item {
+                    SectionHeader("Цветовая схема")
+                    val themes = AuraTheme.entries.filter { it != AuraTheme.DYNAMIC || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S }
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        themes.chunked(2).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                row.forEach { t ->
+                                    ThemePreviewCard(t, s.theme == t, Modifier.weight(1f)) { vm.setTheme(t) }
+                                }
+                                if (row.size == 1) Spacer(Modifier.weight(1f))
+                            }
                         }
                     }
-                    SettingRow("Системный звук", "Громкость и аудиоэффекты Android") {
-                        runCatching { ctx.startActivity(Intent(Settings.ACTION_SOUND_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                }
+                item {
+                    SectionHeader("Интерфейс")
+                    FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(0.dp)) {
+                        Column {
+                            ToggleRow("Чёрный AMOLED-фон", "Чисто-чёрный фон в тёмном режиме", s.amoled) { vm.setAmoled(it) }
+                            HorizontalDivider(color = c.border)
+                            ToggleRow("Акцент из обложки", "Подстраивать цвет кнопок под обложку трека", s.adaptive) { vm.setAdaptive(it) }
+                            HorizontalDivider(color = c.border)
+                            ToggleRow("Ретро-кассета в плеере", "Кассета с обложкой альбома на наклейке", s.cassette) { vm.setCassette(it) }
+                        }
                     }
                 }
-            }
-        }
-
-        // ---- помощь ----
-        item { SectionTitle("💾 Карта памяти") }
-        item {
-            Glass(Modifier.fillMaxWidth()) {
-                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    Text("Как добавить песни с карты памяти", style = MaterialTheme.typography.titleSmall, color = c.text)
+            } else {
+                // ===================== ОБЩИЕ =====================
+                item {
+                    SectionHeader("Воспроизведение")
+                    FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(0.dp)) {
+                        Column {
+                            SettingRow(
+                                icon = Icons.Rounded.Bedtime,
+                                title = "Таймер сна",
+                                sub = if (sleepAt > 0) "Активен · плавное выключение" else "Выключен",
+                            ) { sleepDialog = true }
+                            HorizontalDivider(color = c.border)
+                            SettingRow(
+                                icon = Icons.Rounded.BatteryChargingFull,
+                                title = "Работа в фоне",
+                                sub = "Снимите ограничения батареи, если музыка затихает при выключенном экране",
+                            ) {
+                                runCatching {
+                                    ctx.startActivity(
+                                        Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + ctx.packageName))
+                                            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                    )
+                                }
+                            }
+                            HorizontalDivider(color = c.border)
+                            SettingRow(
+                                icon = Icons.AutoMirrored.Rounded.VolumeUp,
+                                title = "Системный звук",
+                                sub = "Громкость и параметры аудио Android",
+                            ) {
+                                runCatching { ctx.startActivity(Intent(Settings.ACTION_SOUND_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
+                            }
+                        }
+                    }
+                }
+                item {
+                    SectionHeader("Медиатека")
+                    FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(0.dp)) {
+                        SettingRow(
+                            icon = Icons.Rounded.DeleteSweep,
+                            title = "Очистить список музыки",
+                            sub = if (tracks.isEmpty()) "Список уже пуст" else "Убрать все ${tracks.size} треков из плеера (файлы не удаляются)",
+                            danger = tracks.isNotEmpty(),
+                        ) { if (tracks.isNotEmpty()) confirmClear = true }
+                    }
+                }
+                item {
+                    SectionHeader("Карта памяти и файлы")
+                    FlatCard(Modifier.fillMaxWidth()) {
+                        Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
+                            Icon(Icons.Rounded.SdCard, null, tint = c.accent)
+                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                                Text("Как добавлять песни с SD-карты", style = MaterialTheme.typography.titleSmall, color = c.text)
+                                Text(
+                                    "1. Нажмите «Добавить папку» в разделе «Моя музыка».\n" +
+                                        "2. В системном окне откройте меню ☰ слева сверху и выберите карту памяти.\n" +
+                                        "3. Откройте нужную папку и нажмите «Использовать эту папку».\n" +
+                                        "4. Или используйте «Открыть с помощью → Aura Player» из любого проводника.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = c.textDim,
+                                )
+                            }
+                        }
+                    }
+                }
+                item {
                     Text(
-                        "1. Разрешите доступ к музыке — плеер сам найдёт песни во внутренней памяти И на карте памяти.\n" +
-                            "2. Если какие-то файлы не появились — «Медиатека» → «Добавить папку» → в меню ☰ выберите карту памяти (SD) → нужную папку → «Использовать эту папку».\n" +
-                            "3. Можно открыть песню прямо из файлового менеджера: «Открыть с помощью» → Aura Player.\n" +
-                            "Поддерживаются MP3, FLAC, M4A/AAC, OGG/Opus, WAV, AMR и другие.",
-                        style = MaterialTheme.typography.bodySmall, color = c.textDim,
+                        "Aura Player 1.1 · Flat Edition 2026\nKotlin · Jetpack Compose · Media3",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = c.textDim,
+                        textAlign = TextAlign.Center,
+                        modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
                     )
                 }
             }
         }
-        item {
-            Text(
-                "Aura Player 1.0 · 2026\nKotlin · Jetpack Compose · Media3",
-                style = MaterialTheme.typography.bodySmall, color = c.textDim, textAlign = TextAlign.Center,
-                modifier = Modifier.fillMaxWidth().padding(top = 24.dp),
-            )
-        }
     }
+
     if (sleepDialog) SleepDialog(sleepAt) { sleepDialog = false }
+    if (confirmClear) {
+        AlertDialog(
+            onDismissRequest = { confirmClear = false },
+            containerColor = c.surface,
+            title = { Text("Очистить список?", color = c.text) },
+            text = { Text("Все добавленные треки будут убраны из плеера. Файлы на телефоне останутся нетронутыми.", color = c.textDim) },
+            confirmButton = {
+                TextButton(onClick = { vm.clearLibrary(); confirmClear = false }) { Text("Очистить", color = c.danger) }
+            },
+            dismissButton = { TextButton(onClick = { confirmClear = false }) { Text("Отмена") } },
+        )
+    }
 }
 
 @Composable
-private fun ThemeTile(t: AuraTheme, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+private fun ThemePreviewCard(t: AuraTheme, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val c = LocalAura.current
-    val shape = RoundedCornerShape(20.dp)
+    val shape = RoundedCornerShape(14.dp)
+    val previewAccent = if (t == AuraTheme.MONO) (if (c.dark) Color(0xFFF4F5F8) else Color(0xFF14161D)) else t.accent
+    val previewBg = if (c.dark) Color(0xFF0D0E12) else Color(0xFFF3F4F7)
+    val previewCard = if (c.dark) Color(0xFF1B1E27) else Color(0xFFFFFFFF)
+
     Column(
-        modifier.clip(shape).background(c.glass).border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.glassBorder, shape)
-            .clickable(onClick = onClick).padding(10.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier
+            .clip(shape)
+            .background(if (selected) c.accentSoft else c.surface)
+            .border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.border, shape)
+            .clickable(onClick = onClick)
+            .padding(10.dp),
     ) {
-        Box(
-            Modifier.fillMaxWidth().aspectRatio(1.4f).clip(RoundedCornerShape(14.dp))
-                .background(
-                    if (t == AuraTheme.DYNAMIC) Brush.sweepGradient(listOf(Color(0xFFEF4444), Color(0xFFF59E0B), Color(0xFF22C55E), Color(0xFF3B82F6), Color(0xFFA855F7), Color(0xFFEF4444)))
-                    else Brush.linearGradient(listOf(t.primary, t.secondary, t.tertiary))
-                ),
-            contentAlignment = Alignment.Center,
+        // мини-превью плоского интерфейса темы
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .clip(RoundedCornerShape(10.dp))
+                .background(previewBg)
+                .border(1.dp, c.border, RoundedCornerShape(10.dp))
+                .padding(8.dp),
+            verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
-            if (selected) Box(Modifier.size(28.dp).clip(CircleShape).background(Color.Black.copy(alpha = 0.45f)), contentAlignment = Alignment.Center) {
-                Icon(Icons.Rounded.Check, null, tint = Color.White, modifier = Modifier.size(18.dp))
+            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                Box(Modifier.size(16.dp).clip(RoundedCornerShape(4.dp)).background(previewAccent))
+                Box(Modifier.weight(1f).height(6.dp).clip(RoundedCornerShape(3.dp)).background(previewCard))
+                if (selected) {
+                    Box(Modifier.size(16.dp).clip(CircleShape).background(previewAccent), contentAlignment = Alignment.Center) {
+                        Icon(Icons.Rounded.Check, null, tint = if (t == AuraTheme.MONO && c.dark) Color.Black else Color.White, modifier = Modifier.size(11.dp))
+                    }
+                }
+            }
+            Box(Modifier.fillMaxWidth(0.7f).height(4.dp).clip(RoundedCornerShape(2.dp)).background(previewAccent.copy(alpha = 0.65f)))
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                Box(Modifier.weight(1f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(previewCard))
+                Box(Modifier.weight(1f).height(12.dp).clip(RoundedCornerShape(4.dp)).background(previewAccent.copy(alpha = 0.25f)))
             }
         }
-        Text(t.title, fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = c.text, maxLines = 1, modifier = Modifier.padding(top = 6.dp))
+        Spacer(Modifier.height(8.dp))
+        Text(
+            t.title,
+            style = MaterialTheme.typography.titleSmall,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.SemiBold,
+            color = if (selected) c.accent else c.text,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
 }
 
 @Composable
 private fun ToggleRow(title: String, sub: String, value: Boolean, onChange: (Boolean) -> Unit) {
     val c = LocalAura.current
-    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { onChange(!value) }) {
-        Column(Modifier.weight(1f)) {
+    Row(
+        Modifier.fillMaxWidth().clickable { onChange(!value) }.padding(horizontal = 14.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f).padding(end = 10.dp)) {
             Text(title, style = MaterialTheme.typography.titleSmall, color = c.text)
             Text(sub, style = MaterialTheme.typography.bodySmall, color = c.textDim)
         }
@@ -172,11 +292,28 @@ private fun ToggleRow(title: String, sub: String, value: Boolean, onChange: (Boo
 }
 
 @Composable
-private fun SettingRow(title: String, sub: String, onClick: () -> Unit) {
+private fun SettingRow(
+    icon: ImageVector,
+    title: String,
+    sub: String,
+    danger: Boolean = false,
+    onClick: () -> Unit,
+) {
     val c = LocalAura.current
-    Column(Modifier.fillMaxWidth().clickable(onClick = onClick)) {
-        Text(title, style = MaterialTheme.typography.titleSmall, color = c.text)
-        Text(sub, style = MaterialTheme.typography.bodySmall, color = c.textDim)
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 14.dp, vertical = 13.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Box(
+            Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(if (danger) c.danger.copy(alpha = 0.14f) else c.accentSoft),
+            contentAlignment = Alignment.Center,
+        ) {
+            Icon(icon, null, tint = if (danger) c.danger else c.accent, modifier = Modifier.size(19.dp))
+        }
+        Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
+            Text(title, style = MaterialTheme.typography.titleSmall, color = if (danger) c.danger else c.text)
+            Text(sub, style = MaterialTheme.typography.bodySmall, color = c.textDim)
+        }
+        Icon(Icons.Rounded.ChevronRight, null, tint = c.textDim, modifier = Modifier.size(20.dp))
     }
-    Spacer(Modifier.height(0.dp))
 }

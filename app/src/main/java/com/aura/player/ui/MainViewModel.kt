@@ -19,7 +19,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
 data class UiSettings(
-    val theme: AuraTheme = AuraTheme.AURORA,
+    val theme: AuraTheme = AuraTheme.COBALT,
     val darkMode: Int = 0,
     val amoled: Boolean = false,
     val adaptive: Boolean = true,
@@ -27,25 +27,33 @@ data class UiSettings(
     val quality: Int = 1,
 )
 
+data class DeviceFolder(
+    val key: String,
+    val name: String,
+    val onSdCard: Boolean,
+    val tracks: List<Track>,
+)
+
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = AudioEngine.prefs
     private val ctx get() = getApplication<Application>()
 
-    // ---------- медиатека ----------
+    // ---------- медиатека (только добавленные пользователем треки) ----------
     val tracks = MutableStateFlow<List<Track>>(emptyList())
-    val scanning = MutableStateFlow(false)
     val addProgress = MutableStateFlow<Int?>(null)
     val toast = MutableStateFlow<String?>(null)
     val sort = MutableStateFlow(prefs.sort)
-    private var deviceTracks: List<Track> = emptyList()
     private var userTracks: List<Track> = Library.loadUser(ctx)
-    private var restored = false
+
+    // выборочный импорт папок с телефона (запускается только по кнопке пользователя)
+    val pickerFolders = MutableStateFlow<List<DeviceFolder>>(emptyList())
+    val pickerLoading = MutableStateFlow(false)
 
     // ---------- настройки ----------
     val settings = MutableStateFlow(
         UiSettings(
-            theme = runCatching { AuraTheme.valueOf(prefs.theme) }.getOrDefault(AuraTheme.AURORA),
+            theme = AuraTheme.fromName(prefs.theme),
             darkMode = prefs.darkMode, amoled = prefs.amoled, adaptive = prefs.adaptiveColor,
             cassette = prefs.cassetteView, quality = prefs.quality,
         )
@@ -63,45 +71,67 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     init {
         publish()
+        if (tracks.value.isNotEmpty()) {
+            AudioEngine.restoreLast(tracks.value)
+        }
     }
 
     // ===================== Медиатека =====================
 
-    fun rescan() {
-        if (scanning.value) return
-        scanning.value = true
-        viewModelScope.launch {
-            deviceTracks = withContext(Dispatchers.IO) { Library.scanDevice(ctx) }
-            publish()
-            scanning.value = false
-            if (!restored) {
-                restored = true
-                AudioEngine.restoreLast(tracks.value)
-            }
-        }
-    }
-
-    /** Пересканировать ранее добавленные папки (вдруг там появились новые файлы) */
+    /** Пересканировать только папки, которые пользователь ранее добавил */
     fun rescanFolders() {
         val trees = Library.loadTrees(ctx)
-        if (trees.isEmpty()) { rescan(); return }
+        if (trees.isEmpty()) {
+            toast.value = "Нет подключённых папок. Добавьте файлы или папку."
+            return
+        }
         viewModelScope.launch {
             addProgress.value = 0
             val found = withContext(Dispatchers.IO) {
                 trees.flatMap { Library.scanTree(ctx, Uri.parse(it)) { n -> addProgress.value = n } }
             }
+            val before = userTracks.size
             mergeUser(found)
             addProgress.value = null
-            rescan()
+            val added = (userTracks.size - before).coerceAtLeast(0)
+            toast.value = if (added > 0) "Новых треков: $added" else "Все папки актуальны"
         }
     }
 
+    /** Сканирует устройство ТОЛЬКО для окна выборочного импорта, ничего само не добавляет */
+    fun loadDeviceFolders() {
+        if (pickerLoading.value) return
+        pickerLoading.value = true
+        viewModelScope.launch {
+            val found = withContext(Dispatchers.IO) { Library.scanDevice(ctx) }
+            val grouped = found
+                .groupBy { (if (it.onSdCard) "sd:" else "in:") + it.folder.ifBlank { "Без папки" } }
+                .map { (k, list) ->
+                    val first = list.first()
+                    DeviceFolder(
+                        key = k,
+                        name = first.folder.ifBlank { if (first.onSdCard) "Карта памяти" else "Внутренняя память" },
+                        onSdCard = first.onSdCard,
+                        tracks = list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }),
+                    )
+                }
+                .sortedWith(compareByDescending<DeviceFolder> { it.onSdCard }.thenByDescending { it.tracks.size })
+            pickerFolders.value = grouped
+            pickerLoading.value = false
+        }
+    }
+
+    fun importTracks(list: List<Track>) {
+        if (list.isEmpty()) return
+        val marked = list.map { it.copy(userAdded = true) }
+        val before = userTracks.size
+        mergeUser(marked)
+        val diff = (userTracks.size - before).coerceAtLeast(0)
+        toast.value = if (diff > 0) "Добавлено треков: $diff" else "Эти треки уже есть в списке"
+    }
+
     private fun publish() {
-        val hidden = prefs.hiddenUris
-        val all = LinkedHashMap<String, Track>()
-        deviceTracks.forEach { if (it.uri !in hidden) all[it.uri] = it }
-        userTracks.forEach { if (it.uri !in hidden) all.putIfAbsent(it.uri, it) }
-        tracks.value = sorted(all.values.toList(), sort.value)
+        tracks.value = sorted(userTracks, sort.value)
     }
 
     private fun sorted(list: List<Track>, s: Int): List<Track> = when (s) {
@@ -125,9 +155,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                     Library.readTrack(ctx, u)
                 }
             }
+            val before = userTracks.size
             mergeUser(list)
             addProgress.value = null
-            toast.value = "Добавлено треков: ${list.size}"
+            val diff = (userTracks.size - before).coerceAtLeast(0)
+            toast.value = if (diff > 0) "Добавлено треков: $diff" else "Файлы уже в списке"
         }
     }
 
@@ -137,9 +169,15 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             Library.saveTrees(ctx, Library.loadTrees(ctx) + tree.toString())
             addProgress.value = 0
             val list = withContext(Dispatchers.IO) { Library.scanTree(ctx, tree) { n -> addProgress.value = n } }
+            val before = userTracks.size
             mergeUser(list)
             addProgress.value = null
-            toast.value = if (list.isEmpty()) "В папке не найдено аудиофайлов" else "Добавлено треков: ${list.size}"
+            val diff = (userTracks.size - before).coerceAtLeast(0)
+            toast.value = when {
+                list.isEmpty() -> "В папке не найдено аудиофайлов"
+                diff > 0 -> "Добавлено треков: $diff"
+                else -> "Треки из этой папки уже добавлены"
+            }
         }
     }
 
@@ -147,25 +185,27 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (list.isEmpty()) return
         val map = LinkedHashMap<String, Track>()
         userTracks.forEach { map[it.uri] = it }
-        list.forEach { map[it.uri] = it }
+        list.forEach { map[it.uri] = it.copy(userAdded = true) }
         userTracks = map.values.toList()
-        // если трек был скрыт ранее — снова показываем
-        prefs.hiddenUris = prefs.hiddenUris - list.map { it.uri }.toSet()
         Library.saveUser(ctx, userTracks)
         publish()
     }
 
     fun remove(t: Track) {
-        if (t.userAdded) {
-            userTracks = userTracks.filterNot { it.uri == t.uri }
-            Library.saveUser(ctx, userTracks)
-        } else {
-            prefs.hiddenUris = prefs.hiddenUris + t.uri
-        }
+        userTracks = userTracks.filterNot { it.uri == t.uri }
+        Library.saveUser(ctx, userTracks)
         publish()
     }
 
-    fun restoreHidden() { prefs.hiddenUris = emptySet(); publish() }
+    fun clearLibrary() {
+        userTracks = emptyList()
+        Library.saveUser(ctx, emptyList())
+        Library.saveTrees(ctx, emptyList())
+        if (!AudioEngine.now.value.isRadio) AudioEngine.stop()
+        prefs.lastUri = ""
+        publish()
+        toast.value = "Список музыки очищен"
+    }
 
     /** Файл, открытый из файлового менеджера («Открыть с помощью…») */
     fun openExternal(uri: Uri) {
@@ -186,7 +226,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun shuffle(list: List<Track>) {
         if (list.isEmpty()) return
         AudioEngine.player.shuffleModeEnabled = true
-        AudioEngine.playTracks(list, (list.indices).random())
+        AudioEngine.playTracks(list, list.indices.random())
     }
 
     // ===================== Настройки =====================
@@ -221,7 +261,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         if (!f.add(st.id)) f.remove(st.id)
         favorites.value = f
         prefs.favorites = f
-        // станции из онлайн-каталога запоминаем целиком
         if (st.id.startsWith("rb_")) {
             val list = savedOnline.value.filterNot { it.id == st.id }.let { if (st.id in f) it + st else it }
             savedOnline.value = list
@@ -241,7 +280,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                 val known = RadioCatalog.defaults.map { it.name.lowercase() }.toSet()
                 online.value = list.filter { it.name.lowercase() !in known }
                 if (list.isEmpty()) onlineError.value = "Ничего не найдено"
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 onlineError.value = "Онлайн-каталог недоступен. Проверьте интернет."
             }
             onlineLoading.value = false

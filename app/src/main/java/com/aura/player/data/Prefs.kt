@@ -21,7 +21,7 @@ class Prefs(context: Context) {
     }
 
     // ---- оформление ----
-    var theme: String get() = str("theme", "AURORA"); set(v) = put("theme", v)
+    var theme: String get() = str("theme", "COBALT"); set(v) = put("theme", v)
     var darkMode: Int get() = sp.getInt("dark", 0); set(v) = put("dark", v) // 0 системная, 1 тёмная, 2 светлая
     var adaptiveColor: Boolean get() = sp.getBoolean("adaptive", true); set(v) = put("adaptive", v)
     var cassetteView: Boolean get() = sp.getBoolean("cassette", true); set(v) = put("cassette", v)
