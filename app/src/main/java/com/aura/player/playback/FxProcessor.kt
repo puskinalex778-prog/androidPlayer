@@ -33,7 +33,7 @@ class FxProcessor : BaseAudioProcessor() {
     // ---------- параметры ----------
     @Volatile var mode: Mode = Mode.NONE
     @Volatile var directBypass: Boolean = false
-    @Volatile var preferFloat: Boolean = true
+    @Volatile var hiResDither: Boolean = true
     @Volatile private var gains = FloatArray(10)
     @Volatile private var eqOn = true
     @Volatile private var bassDb = 0f
@@ -110,15 +110,12 @@ class FxProcessor : BaseAudioProcessor() {
     private val frame = FloatArray(8)
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
+        // Всегда сохраняем формат входа (PCM 16-bit или PCM Float), чтобы не ломать SonicAudioProcessor
+        // и Bluetooth AudioTrack на прошивках Huawei/Xiaomi/Samsung!
         if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT && inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT) {
             return AudioProcessor.AudioFormat.NOT_SET
         }
-        val targetEnc = when {
-            directBypass -> inputAudioFormat.encoding
-            preferFloat -> C.ENCODING_PCM_FLOAT
-            else -> C.ENCODING_PCM_16BIT
-        }
-        return AudioProcessor.AudioFormat(inputAudioFormat.sampleRate, inputAudioFormat.channelCount, targetEnc)
+        return inputAudioFormat
     }
 
     override fun onFlush() {
@@ -128,7 +125,7 @@ class FxProcessor : BaseAudioProcessor() {
         outFloat = outputAudioFormat.encoding == C.ENCODING_PCM_FLOAT
         liveSampleRate = sampleRate
         liveChannels = channels
-        liveIsFloat = outFloat
+        liveIsFloat = outFloat || hiResDither
 
         delayLen = sampleRate
         delay = Array(channels) { FloatArray(delayLen) }
@@ -242,8 +239,9 @@ class FxProcessor : BaseAudioProcessor() {
         val isMono = mono
         val isNorm = normalize
         val stereo = ch == 2
+        val dither = hiResDither && !outFl && !directBypass
         val bypass = directBypass || (
-            m == Mode.NONE && filters.isEmpty() && abs(g - 1f) < 0.001f &&
+            !dither && m == Mode.NONE && filters.isEmpty() && abs(g - 1f) < 0.001f &&
                 (!stereo || (abs(w - 1f) < 0.01f && abs(bal) < 0.01f && !isMono)) && !isNorm
             )
         val ready = delay.size == ch && delayLen > 0
@@ -405,7 +403,14 @@ class FxProcessor : BaseAudioProcessor() {
             for (c in 0 until ch) {
                 val v = softClip(frame[c] * totalGain)
                 monoSum += v
-                if (outFl) out.putFloat(v) else out.putShort((v * 32767f).toInt().toShort())
+                if (outFl) {
+                    out.putFloat(v)
+                } else {
+                    // В режиме Hi-Res 32-bit DSP применяем треугольный TPDF-дизеринг перед квантованием в 16 бит
+                    val d = if (dither) (noise() + noise()) * (0.5f / 32768f) else 0f
+                    val s16 = ((v + d).coerceIn(-1f, 1f) * 32767f).toInt()
+                    out.putShort(s16.toShort())
+                }
             }
             tap(monoSum / ch)
 

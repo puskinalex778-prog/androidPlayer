@@ -34,8 +34,8 @@ data class CustomTheme(
 
 /** Режим качества вывода звука (как в AIMP / Hi-Res плеерах). */
 enum class AudioQualityMode(val title: String, val desc: String, val badge: String) {
-    STUDIO_FLOAT("Hi-Res 32-bit Float", "Максимальная точность DSP без искажений и клиппинга", "32-bit FLOAT"),
-    HIFI_PCM("Стандарт 16-bit PCM", "Классический вывод — лучшая совместимость с Bluetooth и авто", "16-bit PCM"),
+    STUDIO_FLOAT("Hi-Res 32-bit DSP", "32-битная обработка + TPDF-дизеринг без искажений и клиппинга", "32-bit DSP"),
+    HIFI_PCM("Стандарт 16-bit PCM", "Классическая обработка — стабильно на любом Bluetooth и авто", "16-bit PCM"),
     DIRECT_PURE("Direct (без обработки)", "Чистый сигнал в обход эквалайзера и эффектов, экономит заряд", "DIRECT");
 
     companion object {

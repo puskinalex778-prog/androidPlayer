@@ -151,7 +151,6 @@ object AudioEngine {
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean,
             ): AudioSink = DefaultAudioSink.Builder(context)
-                .setEnableFloatOutput(true)
                 .setAudioProcessors(arrayOf<AudioProcessor>(fx))
                 .build()
         }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
@@ -185,14 +184,10 @@ object AudioEngine {
         .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
         .build()
 
-    /** Живая техническая строка потока (как в AIMP: «48.0 kHz · 32-bit Float · Стерео») */
+    /** Живая техническая строка потока (как в AIMP: «48.0 kHz · 32-bit DSP · Стерео») */
     fun techSummary(): String {
         val khz = "%.1f kHz".format(fx.liveSampleRate / 1000f)
-        val bits = when {
-            sound.value.quality == AudioQualityMode.DIRECT_PURE -> "Direct"
-            fx.liveIsFloat -> "32-bit Float"
-            else -> "16-bit PCM"
-        }
+        val bits = sound.value.quality.badge
         val ch = when {
             sound.value.mono || fx.liveChannels == 1 -> "Моно"
             fx.liveChannels == 2 -> "Стерео"
@@ -551,23 +546,13 @@ object AudioEngine {
     fun setAudioQuality(q: AudioQualityMode) {
         prefs.audioQuality = q.ordinal
         sound.update { it.copy(quality = q) }
-        applyQualityToFx(reconfigure = true)
+        applyQualityToFx()
     }
 
-    private fun applyQualityToFx(reconfigure: Boolean) {
+    private fun applyQualityToFx() {
         val q = sound.value.quality
         fx.directBypass = q == AudioQualityMode.DIRECT_PURE
-        fx.preferFloat = q == AudioQualityMode.STUDIO_FLOAT
-        if (reconfigure && ::player.isInitialized && player.mediaItemCount > 0) {
-            // Перезапускаем аудио-конвейер на текущей позиции, чтобы 32-bit Float / 16-bit PCM применилось сразу
-            val pos = player.currentPosition
-            val wasPlaying = player.isPlaying
-            val idx = player.currentMediaItemIndex
-            player.stop()
-            player.prepare()
-            if (!now.value.isRadio && idx >= 0) player.seekTo(idx, pos)
-            if (wasPlaying) player.play()
-        }
+        fx.hiResDither = q == AudioQualityMode.STUDIO_FLOAT
     }
 
     fun resetSound() {
@@ -596,7 +581,7 @@ object AudioEngine {
         fx.balance = prefs.balance
         fx.mono = prefs.mono
         fx.normalize = prefs.normalize
-        applyQualityToFx(reconfigure = false)
+        applyQualityToFx()
         pushEq()
         applyPlayback()
     }

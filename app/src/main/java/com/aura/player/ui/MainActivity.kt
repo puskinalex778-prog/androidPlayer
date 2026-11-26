@@ -102,7 +102,8 @@ class MainActivity : ComponentActivity() {
 
     private val vm: MainViewModel by viewModels()
     private var controllerFuture: ListenableFuture<MediaController>? = null
-    private var openPickerAfterPerm = mutableStateOf(false)
+    private var openPickerSignal = mutableStateOf<Int?>(null) // 0 = Файлы, 1 = Папки
+    private var pendingPickerMode = 0
     private var pendingPlaylistId: String? = null
 
     private val audioPermission: String
@@ -111,11 +112,15 @@ class MainActivity : ComponentActivity() {
     private val notifPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
     private val pickerPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        val pl = pendingPlaylistId
         if (granted || checkAudioPerm()) {
-            vm.loadDeviceFolders()
-            openPickerAfterPerm.value = true
+            vm.loadDeviceFolders(targetPlaylistId = pl)
+            openPickerSignal.value = pendingPickerMode
         } else {
-            vm.toast.value = "Нет доступа к памяти. Используйте «Добавить файлы» или «Папка / SD»."
+            // Запасной вариант — системный выбор, если пользователь запретил доступ к музыке
+            runCatching {
+                pickFiles.launch(arrayOf("audio/mpeg", "audio/flac", "audio/x-flac", "audio/wav", "audio/x-wav", "audio/ogg", "application/ogg", "audio/opus", "audio/aac"))
+            }
         }
     }
 
@@ -165,13 +170,17 @@ class MainActivity : ComponentActivity() {
 
                 AppRoot(
                     vm = vm,
-                    showPickerSignal = openPickerAfterPerm.value,
-                    onConsumePickerSignal = { openPickerAfterPerm.value = false },
+                    pickerSignalMode = openPickerSignal.value,
+                    onConsumePickerSignal = { openPickerSignal.value = null },
                     onAddFiles = { plId ->
+                        // Открываем встроенный фильтр-выбор песен (показывает ТОЛЬКО музыку, без PNG/JPG/M4A/MP4!)
                         pendingPlaylistId = plId
-                        runCatching {
-                            // Без video/mp4; m4a/mp4 дополнительно отфильтруются в Library.isAllowedUri
-                            pickFiles.launch(arrayOf("audio/*"))
+                        pendingPickerMode = 0
+                        if (checkAudioPerm()) {
+                            vm.loadDeviceFolders(targetPlaylistId = plId)
+                            openPickerSignal.value = 0
+                        } else {
+                            pickerPermLauncher.launch(audioPermission)
                         }
                     },
                     onAddFolder = { plId ->
@@ -179,9 +188,11 @@ class MainActivity : ComponentActivity() {
                         runCatching { pickFolder.launch(null) }
                     },
                     onRequestDevicePicker = {
+                        pendingPlaylistId = null
+                        pendingPickerMode = 1
                         if (checkAudioPerm()) {
-                            vm.loadDeviceFolders()
-                            openPickerAfterPerm.value = true
+                            vm.loadDeviceFolders(targetPlaylistId = null)
+                            openPickerSignal.value = 1
                         } else {
                             pickerPermLauncher.launch(audioPermission)
                         }
@@ -231,7 +242,7 @@ private enum class Tab(val title: String, val icon: ImageVector) {
 @Composable
 private fun AppRoot(
     vm: MainViewModel,
-    showPickerSignal: Boolean,
+    pickerSignalMode: Int?,
     onConsumePickerSignal: () -> Unit,
     onAddFiles: (playlistId: String?) -> Unit,
     onAddFolder: (playlistId: String?) -> Unit,
@@ -246,7 +257,7 @@ private fun AppRoot(
     var soundSection by rememberSaveable { mutableIntStateOf(0) }
     var settingsSection by rememberSaveable { mutableIntStateOf(0) }
     var full by rememberSaveable { mutableStateOf(false) }
-    var showPicker by remember { mutableStateOf(false) }
+    var pickerMode by remember { mutableStateOf<Int?>(null) }
     var showSleep by remember { mutableStateOf(false) }
 
     val now by AudioEngine.now.collectAsState()
@@ -260,9 +271,9 @@ private fun AppRoot(
     val error by AudioEngine.error.collectAsState()
     val toast by vm.toast.collectAsState()
 
-    LaunchedEffect(showPickerSignal) {
-        if (showPickerSignal) {
-            showPicker = true
+    LaunchedEffect(pickerSignalMode) {
+        if (pickerSignalMode != null) {
+            pickerMode = pickerSignalMode
             onConsumePickerSignal()
         }
     }
@@ -374,8 +385,13 @@ private fun AppRoot(
     safState?.let { st ->
         SafFolderBrowserSheet(vm = vm, state = st)
     }
-    if (showPicker) {
-        DeviceFolderPickerSheet(vm = vm, onDismiss = { showPicker = false })
+    pickerMode?.let { mode ->
+        DeviceFolderPickerSheet(
+            vm = vm,
+            initialMode = mode,
+            onOpenSdFolder = { onAddFolder(vm.pickerTargetPlaylistId.value) },
+            onDismiss = { pickerMode = null },
+        )
     }
     if (showSleep) {
         SleepDialog(sleepAt) { showSleep = false }

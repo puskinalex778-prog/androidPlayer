@@ -311,7 +311,7 @@ fun SettingsScreen(
                 }
                 item {
                     Text(
-                        "Aura Player 1.3 · 2026\nKotlin · Jetpack Compose · Media3 · 32-bit DSP",
+                        "Aura Player 1.4 · 2026\nKotlin · Jetpack Compose · Media3 · 32-bit DSP",
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textDim,
                         textAlign = TextAlign.Center,

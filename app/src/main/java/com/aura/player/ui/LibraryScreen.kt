@@ -783,6 +783,7 @@ fun SafFolderBrowserSheet(
 ) {
     val c = LocalAura.current
     var includeSubfolders by remember { mutableStateOf(false) }
+    var selectedDocIds by remember(state.listing?.docId) { mutableStateOf(setOf<String>()) }
     val listing = state.listing
     val breadcrumb = state.stack.joinToString(" / ") { it.second }
 
@@ -803,7 +804,7 @@ fun SafFolderBrowserSheet(
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        breadcrumb.ifBlank { "Откройте нужную папку" },
+                        breadcrumb.ifBlank { "Показаны только музыкальные форматы" },
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textDim,
                         maxLines = 1,
@@ -819,9 +820,9 @@ fun SafFolderBrowserSheet(
                     CircularProgressIndicator(color = c.accent)
                 }
             } else {
-                LazyColumn(Modifier.fillMaxWidth().height(320.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                LazyColumn(Modifier.fillMaxWidth().height(330.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                     if (listing.folders.isNotEmpty()) {
-                        item { SectionHeader("Подпапки (${listing.folders.size}) — нажмите, чтобы открыть") }
+                        item { SectionHeader("Папки (${listing.folders.size}) — нажмите, чтобы открыть") }
                         items(listing.folders, key = { it.docId }) { f ->
                             FlatCard(
                                 Modifier.fillMaxWidth(),
@@ -846,26 +847,33 @@ fun SafFolderBrowserSheet(
                     }
 
                     if (listing.files.isNotEmpty()) {
-                        item { SectionHeader("Аудиофайлы в этой папке (${listing.files.size})") }
-                        items(listing.files.take(30), key = { it.docId }) { f ->
-                            Row(
-                                Modifier.fillMaxWidth().padding(horizontal = 6.dp, vertical = 5.dp),
-                                verticalAlignment = Alignment.CenterVertically,
+                        item { SectionHeader("Музыка в этой папке (${listing.files.size}) — можно отметить отдельные файлы") }
+                        items(listing.files, key = { it.docId }) { f ->
+                            val checked = f.docId in selectedDocIds
+                            FlatCard(
+                                Modifier.fillMaxWidth(),
+                                color = if (checked) c.accentSoft else c.surface2,
+                                onClick = {
+                                    selectedDocIds = if (checked) selectedDocIds - f.docId else selectedDocIds + f.docId
+                                },
+                                padding = PaddingValues(10.dp),
                             ) {
-                                Icon(Icons.Rounded.MusicNote, null, tint = c.textDim, modifier = Modifier.size(16.dp))
-                                Text(
-                                    f.name,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    color = c.text,
-                                    modifier = Modifier.padding(start = 8.dp),
-                                    maxLines = 1,
-                                    overflow = TextOverflow.Ellipsis,
-                                )
-                            }
-                        }
-                        if (listing.files.size > 30) {
-                            item {
-                                Text("… и ещё ${listing.files.size - 30} файлов", style = MaterialTheme.typography.bodySmall, color = c.textDim, modifier = Modifier.padding(start = 8.dp))
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        if (checked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
+                                        null,
+                                        tint = if (checked) c.accent else c.textDim,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                    Text(
+                                        f.name,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.text,
+                                        modifier = Modifier.weight(1f).padding(start = 10.dp),
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
                             }
                         }
                     }
@@ -874,15 +882,15 @@ fun SafFolderBrowserSheet(
                         item {
                             FlatEmptyState(
                                 icon = Icons.Rounded.FolderOpen,
-                                title = "Папка пуста",
-                                text = "В этой папке нет подходящих музыкальных файлов (m4a/mp4 скрыты).",
+                                title = "Нет музыки в папке",
+                                text = "Показываются только музыкальные форматы (MP3, FLAC, WAV, OGG, OPUS, AAC). Картинки и m4a/mp4 скрыты.",
                                 modifier = Modifier.fillMaxWidth(),
                             )
                         }
                     }
                 }
 
-                if (listing.folders.isNotEmpty()) {
+                if (listing.folders.isNotEmpty() && selectedDocIds.isEmpty()) {
                     Row(
                         Modifier.fillMaxWidth().clickable { includeSubfolders = !includeSubfolders }.padding(vertical = 4.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -897,15 +905,20 @@ fun SafFolderBrowserSheet(
                 }
 
                 Spacer(Modifier.height(8.dp))
-                val canImport = listing.files.isNotEmpty() || (includeSubfolders && listing.folders.isNotEmpty())
+                val pickedEntries = listing.files.filter { it.docId in selectedDocIds }
+                val canImport = pickedEntries.isNotEmpty() || listing.files.isNotEmpty() || (includeSubfolders && listing.folders.isNotEmpty())
                 FlatPrimaryButton(
                     text = when {
+                        pickedEntries.isNotEmpty() -> "Добавить выбранные файлы (${pickedEntries.size})"
                         includeSubfolders -> "Добавить «${listing.folderName}» с подпапками"
                         listing.files.isNotEmpty() -> "Добавить только эту папку (${listing.files.size})"
                         else -> "Откройте папку с музыкой выше"
                     },
                     icon = Icons.Rounded.Add,
-                    onClick = { if (canImport) vm.safImportCurrent(recursive = includeSubfolders) },
+                    onClick = {
+                        if (pickedEntries.isNotEmpty()) vm.safImportSelected(pickedEntries)
+                        else if (canImport) vm.safImportCurrent(recursive = includeSubfolders)
+                    },
                     modifier = Modifier.fillMaxWidth(),
                 )
             }
@@ -913,57 +926,161 @@ fun SafFolderBrowserSheet(
     }
 }
 
-// ===================== Выборочный импорт папок с устройства =====================
+// ===================== Встроенный выбор песен и папок (ТОЛЬКО музыка, без PNG/JPG/M4A/MP4!) =====================
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun DeviceFolderPickerSheet(
     vm: MainViewModel,
+    initialMode: Int = 0, // 0 = Файлы (песни), 1 = Папки
+    onOpenSdFolder: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val c = LocalAura.current
     val folders by vm.pickerFolders.collectAsState()
+    val allTracks by vm.pickerAllTracks.collectAsState()
     val loading by vm.pickerLoading.collectAsState()
-    var selectedKeys by remember { mutableStateOf(setOf<String>()) }
+    val targetPl by vm.pickerTargetPlaylistId.collectAsState()
 
-    val selectedTracks = remember(folders, selectedKeys) {
-        folders.filter { it.key in selectedKeys }.flatMap { it.tracks }
+    var mode by remember(initialMode) { mutableStateOf(initialMode) }
+    var search by remember { mutableStateOf("") }
+    var activeFolderKey by remember { mutableStateOf<String?>(null) }
+    var selectedUris by remember { mutableStateOf(setOf<String>()) }
+    var selectedFolderKeys by remember { mutableStateOf(setOf<String>()) }
+
+    val visibleTracks = remember(allTracks, folders, activeFolderKey, search) {
+        val base = if (activeFolderKey == null) allTracks
+        else folders.firstOrNull { it.key == activeFolderKey }?.tracks ?: emptyList()
+        if (search.isBlank()) base
+        else base.filter {
+            it.title.contains(search, true) || it.artist.contains(search, true) || it.folder.contains(search, true)
+        }
+    }
+
+    val chosenTracks = remember(mode, allTracks, folders, selectedUris, selectedFolderKeys) {
+        if (mode == 0) allTracks.filter { it.uri in selectedUris }
+        else folders.filter { it.key in selectedFolderKeys }.flatMap { it.tracks }
     }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surfaceSolid) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 20.dp)) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 22.dp)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
-                    Text("Выбрать папки с устройства", style = MaterialTheme.typography.titleLarge, color = c.text)
-                    Text("Отметьте нужные папки (m4a/mp4 исключены)", style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                    Text(if (mode == 0) "Добавить песни" else "Выбрать папки", style = MaterialTheme.typography.titleLarge, color = c.text)
+                    Text("Только музыка: MP3, FLAC, WAV, OGG, OPUS, AAC", style = MaterialTheme.typography.bodySmall, color = c.textDim)
                 }
-                IconButton(onClick = { vm.loadDeviceFolders() }) {
+                IconButton(onClick = { onDismiss(); onOpenSdFolder() }) {
+                    Icon(Icons.Rounded.CreateNewFolder, "Открыть папку SD", tint = c.accent)
+                }
+                IconButton(onClick = { vm.loadDeviceFolders(targetPl) }) {
                     Icon(Icons.Rounded.Refresh, "Обновить", tint = c.text)
                 }
             }
-            Spacer(Modifier.height(12.dp))
+
+            Spacer(Modifier.height(10.dp))
+            FlatSegmentedControl(
+                options = listOf("Файлы (${allTracks.size})", "Папки (${folders.size})"),
+                selectedIndex = mode,
+                onSelect = { mode = it },
+            )
+            Spacer(Modifier.height(10.dp))
+
             if (loading) {
-                Box(Modifier.fillMaxWidth().height(200.dp), contentAlignment = Alignment.Center) {
+                Box(Modifier.fillMaxWidth().height(240.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         CircularProgressIndicator(color = c.accent)
-                        Text("Ищу папки с музыкой…", color = c.textDim, style = MaterialTheme.typography.bodyMedium)
+                        Text("Ищу музыкальные файлы…", color = c.textDim, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
-            } else if (folders.isEmpty()) {
+            } else if (allTracks.isEmpty()) {
                 FlatEmptyState(
                     icon = Icons.Rounded.FolderOpen,
-                    title = "Папки не найдены",
-                    text = "На устройстве не найдено подходящей музыки, либо нет доступа к памяти.",
+                    title = "Музыка не найдена",
+                    text = "Подходящих аудиофайлов в памяти не найдено. Если музыка на SD-карте — нажмите кнопку ниже, чтобы открыть папку напрямую.",
                     modifier = Modifier.fillMaxWidth(),
-                )
-            } else {
-                LazyColumn(Modifier.fillMaxWidth().height(340.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(folders, key = { it.key }) { f ->
-                        val checked = f.key in selectedKeys
+                ) {
+                    FlatTonalButton("Открыть папку на SD-карте", Icons.Rounded.SdCard, { onDismiss(); onOpenSdFolder() })
+                }
+            } else if (mode == 0) {
+                // ---- Режим выбора конкретных песен (БЕЗ картинок и m4a/mp4) ----
+                FlatSearchField(search, { search = it }, "Поиск песни или папки…")
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    Modifier.horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    FlatChip("Все", activeFolderKey == null, onClick = { activeFolderKey = null })
+                    folders.forEach { f ->
+                        FlatChip(
+                            text = "${f.name} (${f.tracks.size})",
+                            selected = activeFolderKey == f.key,
+                            onClick = { activeFolderKey = if (activeFolderKey == f.key) null else f.key },
+                            icon = if (f.onSdCard) Icons.Rounded.SdCard else null,
+                        )
+                    }
+                }
+                Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text("Найдено: ${visibleTracks.size}", style = MaterialTheme.typography.bodySmall, color = c.textDim, modifier = Modifier.weight(1f))
+                    val allVisibleSelected = visibleTracks.isNotEmpty() && visibleTracks.all { it.uri in selectedUris }
+                    TextButton(onClick = {
+                        selectedUris = if (allVisibleSelected) selectedUris - visibleTracks.map { it.uri }.toSet()
+                        else selectedUris + visibleTracks.map { it.uri }
+                    }) {
+                        Text(if (allVisibleSelected) "Снять все" else "Выбрать все", color = c.accent)
+                    }
+                }
+
+                LazyColumn(Modifier.fillMaxWidth().height(300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                    items(visibleTracks, key = { it.uri }) { t ->
+                        val checked = t.uri in selectedUris
                         FlatCard(
                             Modifier.fillMaxWidth(),
                             color = if (checked) c.accentSoft else c.surface2,
-                            onClick = { selectedKeys = if (checked) selectedKeys - f.key else selectedKeys + f.key },
+                            onClick = { selectedUris = if (checked) selectedUris - t.uri else selectedUris + t.uri },
+                            padding = PaddingValues(10.dp),
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Icon(
+                                    if (checked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
+                                    null,
+                                    tint = if (checked) c.accent else c.textDim,
+                                )
+                                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                                    Text(t.title, style = MaterialTheme.typography.titleSmall, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                    Text(
+                                        listOf(t.artist, t.folder.takeIf { it.isNotBlank() }, fmtTime(t.durationMs).takeIf { t.durationMs > 0 })
+                                            .filterNotNull().joinToString(" · "),
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textDim,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis,
+                                    )
+                                }
+                                if (t.format.isNotBlank()) {
+                                    Text(
+                                        t.format,
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = c.accent,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(6.dp))
+                                            .background(c.surfaceSolid)
+                                            .padding(horizontal = 6.dp, vertical = 2.dp),
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            } else {
+                // ---- Режим выбора папок ----
+                LazyColumn(Modifier.fillMaxWidth().height(340.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    items(folders, key = { it.key }) { f ->
+                        val checked = f.key in selectedFolderKeys
+                        FlatCard(
+                            Modifier.fillMaxWidth(),
+                            color = if (checked) c.accentSoft else c.surface2,
+                            onClick = { selectedFolderKeys = if (checked) selectedFolderKeys - f.key else selectedFolderKeys + f.key },
                             padding = PaddingValues(12.dp),
                         ) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -991,13 +1108,16 @@ fun DeviceFolderPickerSheet(
                         }
                     }
                 }
-                Spacer(Modifier.height(14.dp))
+            }
+
+            if (allTracks.isNotEmpty()) {
+                Spacer(Modifier.height(12.dp))
                 FlatPrimaryButton(
-                    text = if (selectedTracks.isEmpty()) "Выберите папки выше" else "Добавить выбранные (${selectedTracks.size})",
+                    text = if (chosenTracks.isEmpty()) "Отметьте нужные треки" else "Добавить выбранные (${chosenTracks.size})",
                     icon = Icons.Rounded.Add,
                     onClick = {
-                        if (selectedTracks.isNotEmpty()) {
-                            vm.importTracks(selectedTracks)
+                        if (chosenTracks.isNotEmpty()) {
+                            vm.importTracks(chosenTracks, targetPlaylistId = targetPl)
                             onDismiss()
                         }
                     },

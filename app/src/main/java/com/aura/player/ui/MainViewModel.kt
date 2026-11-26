@@ -65,9 +65,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val sort = MutableStateFlow(prefs.sort)
     private var userTracks: List<Track> = Library.loadUser(ctx)
 
-    // выборочный импорт папок с телефона (MediaStore — только по кнопке пользователя)
+    // выборочный импорт песен и папок с телефона (MediaStore — только музыка, без png/jpg/m4a/mp4!)
     val pickerFolders = MutableStateFlow<List<DeviceFolder>>(emptyList())
+    val pickerAllTracks = MutableStateFlow<List<Track>>(emptyList())
     val pickerLoading = MutableStateFlow(false)
+    val pickerTargetPlaylistId = MutableStateFlow<String?>(null)
 
     // встроенный проводник по выбранному дереву SD / памяти (не сканирует всю карту!)
     val safBrowser = MutableStateFlow<SafBrowserState?>(null)
@@ -106,12 +108,14 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ===================== Медиатека =====================
 
-    fun loadDeviceFolders() {
+    fun loadDeviceFolders(targetPlaylistId: String? = null) {
+        pickerTargetPlaylistId.value = targetPlaylistId
         if (pickerLoading.value) return
         pickerLoading.value = true
         viewModelScope.launch {
             val found = withContext(Dispatchers.IO) { Library.scanDevice(ctx) }
-            val grouped = found
+            val sortedAll = found.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title })
+            val grouped = sortedAll
                 .groupBy { (if (it.onSdCard) "sd:" else "in:") + it.folder.ifBlank { "Без папки" } }
                 .map { (k, list) ->
                     val first = list.first()
@@ -119,10 +123,11 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
                         key = k,
                         name = first.folder.ifBlank { if (first.onSdCard) "Карта памяти" else "Внутренняя память" },
                         onSdCard = first.onSdCard,
-                        tracks = list.sortedWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.title }),
+                        tracks = list,
                     )
                 }
                 .sortedWith(compareByDescending<DeviceFolder> { it.onSdCard }.thenByDescending { it.tracks.size })
+            pickerAllTracks.value = sortedAll
             pickerFolders.value = grouped
             pickerLoading.value = false
         }
@@ -255,6 +260,33 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val cur = st.listing ?: return
         safBrowser.value = null
         importSafFiles(st.treeUri, cur.docId, cur.folderName, recursive = recursive, targetPlaylistId = st.targetPlaylistId)
+    }
+
+    fun safImportSelected(entries: List<SafEntry>) {
+        val st = safBrowser.value ?: return
+        val cur = st.listing ?: return
+        if (entries.isEmpty()) return
+        val plId = st.targetPlaylistId
+        safBrowser.value = null
+        viewModelScope.launch {
+            addProgress.value = 0
+            val list = withContext(Dispatchers.IO) {
+                entries.mapIndexed { i, e ->
+                    addProgress.value = i + 1
+                    Library.readTrack(ctx, e.uri, userAdded = true, fallbackFolder = cur.folderName)
+                }
+            }
+            val before = userTracks.size
+            mergeUser(list)
+            if (plId != null && list.isNotEmpty()) addTracksToPlaylist(plId, list.map { it.uri })
+            addProgress.value = null
+            val diff = (userTracks.size - before).coerceAtLeast(0)
+            toast.value = when {
+                plId != null -> "Добавлено в плейлист: ${list.size}"
+                diff > 0 -> "Добавлено треков: $diff"
+                else -> "Выбранные треки уже есть в списке"
+            }
+        }
     }
 
     private fun importSafFiles(

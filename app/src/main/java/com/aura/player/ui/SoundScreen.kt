@@ -132,7 +132,7 @@ fun SoundScreen(
                         if (s.quality == AudioQualityMode.DIRECT_PURE) {
                             FlatCard(Modifier.fillMaxWidth().padding(bottom = 10.dp), color = c.accentSoft, padding = PaddingValues(12.dp)) {
                                 Text(
-                                    "Включён режим Direct — эффекты и EQ временно в обходе. Переключите качество на 32-bit Float или 16-bit PCM во вкладке «Вывод».",
+                                    "Включён режим Direct — эффекты и EQ временно в обходе. Переключите качество на 32-bit DSP или 16-bit PCM во вкладке «Вывод».",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = c.text,
                                 )
