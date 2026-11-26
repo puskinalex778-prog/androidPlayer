@@ -17,8 +17,14 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Accept Android SDK licenses & ensure SDK 34
+        run: |
+          SDKM="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
+          if [ ! -x "$SDKM" ]; then
+            SDKM="$(find "${ANDROID_HOME}/cmdline-tools" -name sdkmanager -type f | head -n 1)"
+          fi
+          yes | "$SDKM" --licenses > /dev/null || true
+          "$SDKM" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
