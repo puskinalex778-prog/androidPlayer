@@ -215,7 +215,7 @@ fun AudioVisualizer(
         when (type) {
             VisualizerType.BARS -> drawBarsWithPeaks(analyzer, c.accent, c.accent2, c.text, large)
             VisualizerType.PIXELS -> drawPixels(analyzer, c.accent, c.accent2, c.surface2, c.text, large)
-            VisualizerType.LEDS_62 -> draw62Leds(analyzer, c.accent, c.accent2, c.surface2, c.border, large)
+            VisualizerType.LEDS_62 -> draw62Leds(analyzer, c.accent, c.surface2, c.border, large)
             VisualizerType.WAVE -> drawFrequencyWave(analyzer, c.accent, c.accent2, large)
             VisualizerType.RADIAL -> drawRadialRing(analyzer, c.accent, c.accent2, c.border, large)
             VisualizerType.LED_VU -> drawLedMatrix(analyzer, c.surface2, large)
@@ -285,9 +285,8 @@ private fun DrawScope.drawPixels(a: FrequencyAnalyzer, accent: Color, accent2: C
     }
 }
 
-// 3. 62 СВЕТОДИОДА — ровно 62 физических диода, загорающихся в такт музыки
-private fun DrawScope.draw62Leds(a: FrequencyAnalyzer, accent: Color, accent2: Color, socketBg: Color, border: Color, large: Boolean) {
-    val total = 62
+// 3. 62 СВЕТОДИОДА РЯДАМИ — ровно 62 физических диода в горизонтальных рядах, загорающихся в такт музыки
+private fun DrawScope.draw62Leds(a: FrequencyAnalyzer, accent: Color, socketBg: Color, border: Color, large: Boolean) {
     val emerald = Color(0xFF10B981)
     val cyan = Color(0xFF06B6D4)
     val amber = Color(0xFFF59E0B)
@@ -300,53 +299,73 @@ private fun DrawScope.draw62Leds(a: FrequencyAnalyzer, accent: Color, accent2: C
         else -> lerp(emerald, cyan, pos01 / 0.34f)
     }
 
+    fun drawDiode(center: Offset, r: Float, col: Color, on: Boolean, strength: Float = 1f) {
+        // корпус-гнездо светодиода
+        drawCircle(socketBg, r, center)
+        drawCircle(border.copy(alpha = 0.45f), r, center, style = Stroke(r * 0.14f))
+        if (on) {
+            val s = strength.coerceIn(0.45f, 1f)
+            drawCircle(col.copy(alpha = 0.36f * s), r * 1.95f, center)
+            drawCircle(col.copy(alpha = s), r * 0.92f, center)
+            drawCircle(Color.White.copy(alpha = 0.72f * s), r * 0.34f, Offset(center.x - r * 0.15f, center.y - r * 0.15f))
+        } else {
+            drawCircle(col.copy(alpha = 0.11f), r * 0.72f, center)
+        }
+    }
+
     if (large) {
-        // Большая сцена: прецизионное 360° кольцо из РОВНО 62 круглых светодиодов (31 левая дуга + 31 правая дуга)
-        val cx = size.width * 0.5f
-        val cy = size.height * 0.5f
-        val minDim = min(size.width, size.height)
-        val ringR = minDim * 0.40f
-        val ledR = (2 * PI * ringR / total * 0.36).toFloat().coerceIn(2.6f, 6.5f)
+        // Большая сцена: РОВНО 62 светодиода в 5 аккуратных горизонтальных рядах (12 + 13 + 12 + 13 + 12 = 62)
+        // Каждый ряд отвечает за свой частотный диапазон: от суб-баса внизу до высоких частот наверху
+        val rowCounts = intArrayOf(12, 13, 12, 13, 12) // сумма = 62
+        val numRows = rowCounts.size
+        val rowH = size.height / numRows
+        val maxCols = 13
+        val baseStepX = size.width / maxCols
+        val ledR = min(baseStepX * 0.34f, rowH * 0.30f).coerceIn(4f, 14f)
 
-        // декоративный контур платы и центральное ядро, реагирующее на бас
-        drawCircle(border.copy(alpha = 0.45f), ringR, Offset(cx, cy), style = Stroke(ledR * 2.3f))
-        drawCircle(accent.copy(alpha = 0.12f + a.bass * 0.22f), ringR * (0.46f + a.bass * 0.12f), Offset(cx, cy))
-        drawCircle(accent.copy(alpha = 0.65f), ringR * (0.46f + a.bass * 0.12f), Offset(cx, cy), style = Stroke(2.2f))
-
-        // Внутренняя пульсирующая корона (низкие / средние / высокие)
-        drawCircle(accent2.copy(alpha = 0.45f), ringR * (0.28f + a.mid * 0.16f), Offset(cx, cy), style = Stroke(2f))
-        drawCircle(emerald.copy(alpha = 0.55f), ringR * (0.12f + a.high * 0.14f), Offset(cx, cy))
-
-        for (i in 0 until total) {
-            // Располагаем 62 диода равномерно по кругу, начиная снизу (90°)
-            val halfIdx = if (i < 31) i else (61 - i)
-            val pos01 = halfIdx / 30f
-            val angle = if (i < 31) {
-                (PI / 2.0) + (halfIdx + 0.5) / 31.0 * PI
-            } else {
-                (PI / 2.0) - (halfIdx + 0.5) / 31.0 * PI
+        // Собираем уровень и пик для каждого из 5 частотных рядов (снизу вверх: бас -> средние -> высокие)
+        for (rowIdx in 0 until numRows) {
+            val count = rowCounts[rowIdx]
+            // rowIdx 0 = верхний ряд (высокие), rowIdx 4 = нижний ряд (суб-бас)
+            val freqZone = numRows - 1 - rowIdx
+            val bStart = (freqZone * a.bands) / numRows
+            val bEnd = (((freqZone + 1) * a.bands) / numRows).coerceAtLeast(bStart + 1)
+            var zoneLvl = 0f
+            var zonePeak = 0f
+            for (b in bStart until bEnd) {
+                zoneLvl = max(zoneLvl, a.levels[b])
+                zonePeak = max(zonePeak, a.peaks[b])
             }
-            val lx = cx + (cos(angle) * ringR).toFloat()
-            val ly = cy + (sin(angle) * ringR).toFloat()
-            val center = Offset(lx, ly)
+            // лёгкая примесь общего бита, чтобы вся панель дышала в такт
+            val level = (zoneLvl * 0.82f + a.energy * 0.25f).coerceIn(0f, 1f)
+            val peak = max(level, zonePeak)
 
-            val intensity = a.leds62[i]
-            val isLit = intensity > 0.22f
-            val col = ledColorFor(pos01)
+            val y = (rowIdx + 0.5f) * rowH
+            val rowWidth = count * baseStepX
+            val startX = (size.width - rowWidth) * 0.5f
 
-            // корпус неактивного диода
-            drawCircle(socketBg, ledR, center)
-            if (isLit) {
-                val glowAlpha = (intensity * 0.45f).coerceIn(0.15f, 0.55f)
-                drawCircle(col.copy(alpha = glowAlpha), ledR * 2.15f, center)
-                drawCircle(col, ledR * 0.96f, center)
-                drawCircle(Color.White.copy(alpha = 0.72f * intensity), ledR * 0.36f, center)
-            } else {
-                drawCircle(col.copy(alpha = 0.12f), ledR * 0.75f, center)
+            // тонкая планка-дорожка под рядом светодиодов
+            drawRoundRect(
+                socketBg.copy(alpha = 0.35f),
+                Offset(startX + baseStepX * 0.15f, y - ledR * 1.25f),
+                Size(rowWidth - baseStepX * 0.3f, ledR * 2.5f),
+                CornerRadius(ledR * 1.25f),
+            )
+
+            val litCount = (level * count * 1.08f).toInt().coerceIn(0, count)
+            val peakIdx = (peak * (count - 1)).toInt().coerceIn(0, count - 1)
+
+            for (i in 0 until count) {
+                val x = startX + (i + 0.5f) * baseStepX
+                val pos01 = i.toFloat() / max(1, count - 1)
+                val col = ledColorFor(pos01)
+                val isLit = i < litCount || (peak > 0.08f && i == peakIdx)
+                val strength = if (i == peakIdx && i >= litCount) 0.95f else (0.75f + 0.25f * level)
+                drawDiode(Offset(x, y), ledR, col, isLit, strength)
             }
         }
     } else {
-        // Компактная полоса: РОВНО 62 светодиода в 2 аккуратных ряда по 31 диоду (31 × 2 = 62)
+        // Компактная полоса: РОВНО 62 светодиода в 2 горизонтальных ряда по 31 диоду (31 × 2 = 62)
         val perRow = 31
         val stepX = size.width / perRow
         val ledR = min(stepX * 0.34f, size.height * 0.17f).coerceAtLeast(1.8f)
@@ -361,29 +380,12 @@ private fun DrawScope.draw62Leds(a: FrequencyAnalyzer, accent: Color, accent2: C
             val x = (i + 0.5f) * stepX
             val col = ledColorFor(pos01)
 
-            // Верхний ряд (31 LED): уровень в такт баса и общей громкости + пиковый диод
             val topOn = i < litTop || (a.peakEnergy > 0.08f && i == peakTop)
-            drawCircle(socketBg, ledR, Offset(x, yTop))
-            if (topOn) {
-                drawCircle(col.copy(alpha = 0.35f), ledR * 1.85f, Offset(x, yTop))
-                drawCircle(col, ledR, Offset(x, yTop))
-                drawCircle(Color.White.copy(alpha = 0.65f), ledR * 0.35f, Offset(x, yTop))
-            } else {
-                drawCircle(col.copy(alpha = 0.10f), ledR * 0.75f, Offset(x, yTop))
-            }
+            drawDiode(Offset(x, yTop), ledR, col, topOn, 1f)
 
-            // Нижний ряд (31 LED): частотный отклик по 31 полосе (итого 31 + 31 = 62 LED!)
             val bIdx = (i * a.bands / perRow).coerceIn(0, a.bands - 1)
             val botLvl = a.levels[bIdx]
-            val botOn = botLvl > 0.24f
-            drawCircle(socketBg, ledR, Offset(x, yBot))
-            if (botOn) {
-                drawCircle(col.copy(alpha = 0.32f * botLvl), ledR * 1.8f, Offset(x, yBot))
-                drawCircle(col.copy(alpha = (0.45f + botLvl * 0.55f).coerceIn(0f, 1f)), ledR, Offset(x, yBot))
-                drawCircle(Color.White.copy(alpha = 0.55f * botLvl), ledR * 0.32f, Offset(x, yBot))
-            } else {
-                drawCircle(col.copy(alpha = 0.10f), ledR * 0.75f, Offset(x, yBot))
-            }
+            drawDiode(Offset(x, yBot), ledR, col, botLvl > 0.24f, 0.55f + botLvl * 0.45f)
         }
     }
 }

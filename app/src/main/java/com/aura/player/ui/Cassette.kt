@@ -175,7 +175,7 @@ fun Cassette(
         val tx = lx + lw * 0.052f + sideSize
         val tWidth = (lw - (tx - lx) - badgeLayout.size.width - lw * 0.06f).roundToInt().coerceAtLeast(10)
         val titleLayout = measurer.measure(
-            title.ifBlank { "Aura Player" },
+            title.ifBlank { "PoliSANPlayer" },
             TextStyle(color = textColor, fontSize = (lh * 0.095f).toSp(), fontWeight = FontWeight.ExtraBold, fontFamily = FontFamily.SansSerif),
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -240,7 +240,7 @@ fun Cassette(
 
         // ---- маркировка ----
         val brand = measurer.measure(
-            "AURA  ·  HIGH BIAS  ·  TYPE II",
+            "POLISAN  ·  HIGH BIAS  ·  TYPE II",
             TextStyle(
                 color = Color.White.copy(alpha = 0.4f),
                 fontSize = (h * 0.031f).toSp(),

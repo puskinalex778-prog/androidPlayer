@@ -23,6 +23,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
@@ -46,7 +47,6 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
-import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.Equalizer
@@ -83,8 +83,10 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -93,6 +95,7 @@ import androidx.core.content.IntentCompat
 import androidx.core.view.WindowCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
+import com.aura.player.R
 import com.aura.player.playback.AudioEngine
 import com.aura.player.playback.PlaybackService
 import com.google.common.util.concurrent.ListenableFuture
@@ -448,14 +451,14 @@ private fun FlatDrawerMenu(
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    Box(
-                        Modifier.size(42.dp).clip(RoundedCornerShape(c.controlRadius)).background(c.accent),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        Icon(Icons.Rounded.Album, null, tint = c.onAccent, modifier = Modifier.size(24.dp))
-                    }
+                    Image(
+                        painter = painterResource(R.drawable.ic_polisan_logo),
+                        contentDescription = "PoliSANPlayer",
+                        contentScale = ContentScale.Crop,
+                        modifier = Modifier.size(44.dp).clip(RoundedCornerShape(c.controlRadius)),
+                    )
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
-                        Text("Aura Player", style = MaterialTheme.typography.titleMedium, color = c.text)
+                        Text("PoliSANPlayer", style = MaterialTheme.typography.titleMedium, color = c.text)
                         Text(
                             nowTitle ?: "$styleLabel · 2026",
                             style = MaterialTheme.typography.bodySmall,
