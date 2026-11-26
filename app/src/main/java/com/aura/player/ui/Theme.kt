@@ -26,6 +26,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.TextStyle
@@ -33,6 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aura.player.data.CustomTheme
 import kotlin.math.PI
 import kotlin.math.cos
 import kotlin.math.max
@@ -129,82 +131,93 @@ private val AuraType = Typography(
 @Composable
 fun AuraAppTheme(
     theme: AuraTheme,
+    customTheme: CustomTheme?,
     style: UiStyle,
     darkMode: Int,
     amoled: Boolean,
     adaptiveAccent: Color?,
     content: @Composable (dark: Boolean) -> Unit,
 ) {
-    val dark = when (darkMode) { 1 -> true; 2 -> false; else -> isSystemInDarkTheme() }
+    val dark = customTheme?.isDark ?: when (darkMode) { 1 -> true; 2 -> false; else -> isSystemInDarkTheme() }
     val ctx = LocalContext.current
-    val dyn: ColorScheme? = if (theme == AuraTheme.DYNAMIC && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
+    val dyn: ColorScheme? = if (customTheme == null && theme == AuraTheme.DYNAMIC && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
         (if (dark) dynamicDarkColorScheme(ctx) else dynamicLightColorScheme(ctx)) else null
 
-    var p = dyn?.primary ?: if (theme == AuraTheme.MONO) (if (dark) Color(0xFFF4F5F8) else Color(0xFF14161D)) else theme.accent
-    var s = dyn?.secondary ?: theme.secondary
-    if (adaptiveAccent != null && theme != AuraTheme.MONO) {
+    var p = when {
+        customTheme != null -> Color(customTheme.accentArgb)
+        dyn != null -> dyn.primary
+        theme == AuraTheme.MONO -> if (dark) Color(0xFFF4F5F8) else Color(0xFF14161D)
+        else -> theme.accent
+    }
+    var s = when {
+        customTheme != null -> Color(customTheme.secondaryArgb)
+        dyn != null -> dyn.secondary
+        else -> theme.secondary
+    }
+    if (adaptiveAccent != null && customTheme == null && theme != AuraTheme.MONO) {
         p = adaptiveAccent
         s = adaptiveAccent
     }
-    if (!dark && p.luminance() > 0.55f && theme != AuraTheme.MONO) {
+    if (!dark && p.luminance() > 0.58f && theme != AuraTheme.MONO && customTheme == null) {
         p = p.copy(red = p.red * 0.68f, green = p.green * 0.68f, blue = p.blue * 0.68f)
     }
 
-    val accent by animateColorAsState(p, tween(450), label = "accent")
-    val accent2 by animateColorAsState(s, tween(450), label = "accent2")
+    val accent by animateColorAsState(p, tween(220), label = "accent")
+    val accent2 by animateColorAsState(s, tween(220), label = "accent2")
 
-    val bg = when {
+    val rawBg = when {
         dark && amoled -> Color(0xFF000000)
+        customTheme != null -> Color(customTheme.bgArgb)
         dark && style == UiStyle.RETRO -> Color(0xFF12110F)
-        dark && style == UiStyle.SOFT -> Color(0xFF141720)
-        dark && style == UiStyle.GLASS -> Color(0xFF0A0C14)
-        dark -> Color(0xFF0D0E12)
+        dark && style == UiStyle.SOFT -> lerp(Color(0xFF141720), accent, 0.05f)
+        dark && style == UiStyle.GLASS -> lerp(Color(0xFF0A0C14), accent, 0.06f)
+        dark -> lerp(Color(0xFF0D0E12), accent, 0.045f)
         style == UiStyle.RETRO -> Color(0xFFECE8DF)
-        style == UiStyle.SOFT -> Color(0xFFE9ECF3)
-        else -> Color(0xFFF3F4F7)
+        style == UiStyle.SOFT -> lerp(Color(0xFFE9ECF3), accent, 0.04f)
+        else -> lerp(Color(0xFFF3F4F7), accent, 0.03f)
     }
+    val bg by animateColorAsState(rawBg, tween(220), label = "bg")
 
-    val surfaceSolid = when {
-        dark && amoled -> Color(0xFF0D0E12)
+    val rawSurfaceSolid = when {
+        dark && amoled -> Color(0xFF0E1015)
+        customTheme != null -> if (dark) lerp(bg, Color.White, 0.07f) else lerp(bg, Color.White, 0.72f)
         dark && style == UiStyle.RETRO -> Color(0xFF1C1A17)
-        dark && style == UiStyle.SOFT -> Color(0xFF1C202B)
-        dark -> Color(0xFF15171E)
+        dark && style == UiStyle.SOFT -> lerp(Color(0xFF1C202B), accent, 0.05f)
+        dark -> lerp(Color(0xFF15171E), accent, 0.04f)
         style == UiStyle.RETRO -> Color(0xFFF7F4EC)
-        style == UiStyle.SOFT -> Color(0xFFF3F5FA)
+        style == UiStyle.SOFT -> Color(0xFFF4F6FB)
         else -> Color(0xFFFFFFFF)
     }
+    val surfaceSolid by animateColorAsState(rawSurfaceSolid, tween(220), label = "surf")
 
     val surface = when (style) {
-        UiStyle.GLASS -> if (dark) Color(0xFF1B1F2E).copy(alpha = 0.62f) else Color.White.copy(alpha = 0.68f)
+        UiStyle.GLASS -> if (dark) surfaceSolid.copy(alpha = 0.65f) else Color.White.copy(alpha = 0.70f)
         else -> surfaceSolid
     }
 
     val surface2 = when {
-        style == UiStyle.GLASS && dark -> Color.White.copy(alpha = 0.08f)
-        style == UiStyle.GLASS && !dark -> Color.Black.copy(alpha = 0.05f)
+        style == UiStyle.GLASS && dark -> Color.White.copy(alpha = 0.09f)
+        style == UiStyle.GLASS && !dark -> Color.Black.copy(alpha = 0.055f)
+        customTheme != null -> if (dark) lerp(surfaceSolid, Color.White, 0.08f) else lerp(bg, Color.Black, 0.05f)
         dark && amoled -> Color(0xFF171921)
         dark && style == UiStyle.RETRO -> Color(0xFF26231F)
-        dark && style == UiStyle.SOFT -> Color(0xFF232836)
-        dark -> Color(0xFF1F222C)
+        dark -> lerp(surfaceSolid, Color.White, 0.07f)
         style == UiStyle.RETRO -> Color(0xFFE3DEC9).copy(alpha = 0.7f)
-        style == UiStyle.SOFT -> Color(0xFFE0E5F0)
-        else -> Color(0xFFECEEF3)
+        else -> lerp(bg, Color.Black, 0.045f)
     }
 
     val border = when {
-        style == UiStyle.GLASS && dark -> Color.White.copy(alpha = 0.14f)
-        style == UiStyle.GLASS && !dark -> Color.White.copy(alpha = 0.75f)
+        style == UiStyle.GLASS && dark -> Color.White.copy(alpha = 0.15f)
+        style == UiStyle.GLASS && !dark -> Color.White.copy(alpha = 0.8f)
         style == UiStyle.RETRO && dark -> Color(0xFF3D382F)
         style == UiStyle.RETRO && !dark -> Color(0xFFC2BA9F)
-        style == UiStyle.SOFT && dark -> Color(0xFF2D3344)
-        style == UiStyle.SOFT && !dark -> Color(0xFFD4DAE8)
-        dark -> Color(0xFF282C38)
-        else -> Color(0xFFE0E3EC)
+        dark -> lerp(surfaceSolid, Color.White, 0.14f)
+        else -> lerp(bg, Color.Black, 0.11f)
     }
 
     val highlight = if (dark) Color.White.copy(alpha = 0.14f) else Color.White.copy(alpha = 0.9f)
     val text = if (dark) Color(0xFFF4F5F8) else Color(0xFF14151B)
-    val textDim = if (dark) Color(0xFF8F94A8) else Color(0xFF60667A)
+    val textDim = if (dark) Color(0xFF9096AA) else Color(0xFF5F657A)
     val onAccent = if (accent.luminance() > 0.55f) Color(0xFF11131A) else Color.White
 
     val cardRadius = when (style) {
@@ -236,7 +249,7 @@ fun AuraAppTheme(
     val colors = AuraColors(
         style = style,
         accent = accent,
-        accentSoft = accent.copy(alpha = if (dark) 0.17f else 0.13f),
+        accentSoft = accent.copy(alpha = if (dark) 0.18f else 0.13f),
         accent2 = accent2,
         onAccent = onAccent,
         bg = bg,
@@ -261,7 +274,6 @@ fun AuraAppTheme(
     }
 }
 
-/** Тонкий фон-подложка: для Glass — живое свечение, для Retro — деликатная сетка, для Flat/Soft — чистый цвет. */
 @Composable
 fun StyleBackdrop(modifier: Modifier = Modifier) {
     val c = LocalAura.current
@@ -269,7 +281,7 @@ fun StyleBackdrop(modifier: Modifier = Modifier) {
         UiStyle.GLASS -> {
             val tr = rememberInfiniteTransition(label = "glassBg")
             val t by tr.animateFloat(0f, (2 * PI).toFloat(), infiniteRepeatable(tween(24000, easing = LinearEasing)), label = "t")
-            val a = if (c.dark) 0.28f else 0.20f
+            val a = if (c.dark) 0.30f else 0.22f
             Canvas(modifier.fillMaxSize()) {
                 drawRect(c.bg)
                 val r = max(size.width, size.height) * 0.68f

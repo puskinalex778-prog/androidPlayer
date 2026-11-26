@@ -41,7 +41,11 @@ import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Equalizer
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
+import androidx.compose.material.icons.rounded.Forward10
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.Pause
 import androidx.compose.material.icons.rounded.PlayArrow
@@ -49,9 +53,11 @@ import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Repeat
 import androidx.compose.material.icons.rounded.RepeatOne
+import androidx.compose.material.icons.rounded.Replay10
 import androidx.compose.material.icons.rounded.Shuffle
 import androidx.compose.material.icons.rounded.SkipNext
 import androidx.compose.material.icons.rounded.SkipPrevious
+import androidx.compose.material.icons.rounded.Speaker
 import androidx.compose.material.icons.rounded.Star
 import androidx.compose.material.icons.rounded.StarBorder
 import androidx.compose.material.icons.rounded.Tune
@@ -227,8 +233,11 @@ fun FullPlayer(
     val c = LocalAura.current
     val now by AudioEngine.now.collectAsState()
     val sound by AudioEngine.sound.collectAsState()
+    val out by AudioEngine.output.collectAsState()
+    val ab by AudioEngine.abLoop.collectAsState()
     val settings by vm.settings.collectAsState()
     val favs by vm.favorites.collectAsState()
+    val favTracks by vm.favoriteTracks.collectAsState()
     val sleepAt by AudioEngine.sleepAt.collectAsState()
     val artBmp by AudioEngine.art.collectAsState()
     val art: ImageBitmap? = remember(artBmp) { artBmp?.asImageBitmap() }
@@ -236,6 +245,7 @@ fun FullPlayer(
     var seeking by remember { mutableStateOf<Float?>(null) }
     var showQueue by remember { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
+    var showOutput by remember { mutableStateOf(false) }
     var showPlaylistAdd by remember { mutableStateOf(false) }
     var beat by remember { mutableFloatStateOf(0f) }
 
@@ -392,9 +402,69 @@ fun FullPlayer(
                         Icon(if (fav) Icons.Rounded.Star else Icons.Rounded.StarBorder, "Избранное", tint = if (fav) c.accent else c.textDim)
                     }
                 } else if (!now.isRadio && now.track != null) {
-                    IconButton(onClick = { showPlaylistAdd = true }) {
+                    val tr = now.track!!
+                    val liked = tr.uri in favTracks
+                    IconButton(onClick = { vm.toggleFavoriteTrack(tr.uri) }, modifier = Modifier.size(40.dp)) {
+                        Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, "Избранное", tint = if (liked) c.danger else c.textDim)
+                    }
+                    IconButton(onClick = { showPlaylistAdd = true }, modifier = Modifier.size(40.dp)) {
                         Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "В плейлист", tint = c.accent)
                     }
+                }
+            }
+
+            // ---- строка качества AIMP + быстрый выбор вывода (Динамик / Наушники) ----
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(8.dp))
+                        .background(c.surface)
+                        .border(c.borderWidth, c.border, RoundedCornerShape(8.dp))
+                        .clickable { showOutput = true }
+                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(5.dp),
+                ) {
+                    Icon(
+                        if (out.mode == com.aura.player.data.OutputMode.SPEAKER) Icons.Rounded.Speaker else Icons.Rounded.Headphones,
+                        null,
+                        tint = c.accent,
+                        modifier = Modifier.size(13.dp),
+                    )
+                    Text(
+                        "${out.activeLabel} · ${sound.quality.badge}",
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = c.text,
+                        maxLines = 1,
+                    )
+                }
+                Spacer(Modifier.weight(1f))
+                if (!now.isRadio) {
+                    val aStart = ab.aMs
+                    val abLabel = when {
+                        ab.active -> "A–B ✓"
+                        aStart != null -> "A: ${fmtTime(aStart)} → B?"
+                        else -> "A–B"
+                    }
+                    Text(
+                        abLabel,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        fontWeight = FontWeight.Bold,
+                        color = if (ab.aMs != null) c.onAccent else c.textDim,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .background(if (ab.aMs != null) c.accent else c.surface)
+                            .border(c.borderWidth, if (ab.aMs != null) c.accent else c.border, RoundedCornerShape(8.dp))
+                            .clickable { AudioEngine.tapAbLoop() }
+                            .padding(horizontal = 8.dp, vertical = 4.dp),
+                    )
                 }
             }
 
@@ -443,9 +513,17 @@ fun FullPlayer(
                         inactiveTrackColor = c.surface2,
                     ),
                 )
-                Row(Modifier.fillMaxWidth()) {
+                Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                     val curMs = (seeking?.let { (it * dur).toLong() }) ?: pos
                     Text(fmtTime(curMs), style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace, color = c.textDim)
+                    Spacer(Modifier.weight(1f))
+                    IconButton(onClick = { AudioEngine.seekBy(-10_000L) }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Rounded.Replay10, "-10 сек", tint = c.textDim, modifier = Modifier.size(18.dp))
+                    }
+                    Spacer(Modifier.width(8.dp))
+                    IconButton(onClick = { AudioEngine.seekBy(10_000L) }, modifier = Modifier.size(30.dp)) {
+                        Icon(Icons.Rounded.Forward10, "+10 сек", tint = c.textDim, modifier = Modifier.size(18.dp))
+                    }
                     Spacer(Modifier.weight(1f))
                     Text(if (dur > 0) fmtTime(dur) else "0:00", style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace, color = c.textDim)
                 }
@@ -518,16 +596,17 @@ fun FullPlayer(
                     onClick = { showSleep = true },
                 )
                 ToolButton(
-                    icon = if (now.isRadio) Icons.Rounded.Tune else Icons.AutoMirrored.Rounded.QueueMusic,
-                    label = if (now.isRadio) "Станции" else "Очередь",
-                    active = false,
+                    icon = if (out.mode == com.aura.player.data.OutputMode.SPEAKER) Icons.Rounded.Speaker else Icons.Rounded.Headphones,
+                    label = "Вывод",
+                    active = out.mode != com.aura.player.data.OutputMode.AUTO,
                     modifier = Modifier.weight(1f),
-                    onClick = { if (now.isRadio) onClose() else showQueue = true },
+                    onClick = { showOutput = true },
                 )
             }
         }
     }
 
+    if (showOutput) AudioOutputSheet { showOutput = false }
     if (showQueue) {
         ModalBottomSheet(onDismissRequest = { showQueue = false }, containerColor = c.surfaceSolid) {
             QueueList()

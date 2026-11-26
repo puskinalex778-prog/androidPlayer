@@ -56,6 +56,7 @@ import androidx.compose.material.icons.rounded.PhoneAndroid
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.SpeakerGroup
 import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
@@ -148,10 +149,13 @@ class MainActivity : ComponentActivity() {
 
         setContent {
             val settings by vm.settings.collectAsState()
+            val customThemes by vm.customThemes.collectAsState()
+            val previewCustom by vm.previewCustomTheme.collectAsState()
+            val activeCustom = previewCustom ?: customThemes.firstOrNull { it.id == settings.activeCustomThemeId }
             val accentInt by AudioEngine.accent.collectAsState()
-            val adaptive = if (settings.adaptive && settings.theme != AuraTheme.MONO) accentInt?.let { Color(it) } else null
+            val adaptive = if (settings.adaptive && activeCustom == null && settings.theme != AuraTheme.MONO) accentInt?.let { Color(it) } else null
 
-            AuraAppTheme(settings.theme, settings.style, settings.darkMode, settings.amoled, adaptive) { dark ->
+            AuraAppTheme(settings.theme, activeCustom, settings.style, settings.darkMode, settings.amoled, adaptive) { dark ->
                 val view = LocalView.current
                 SideEffect {
                     val controller = WindowCompat.getInsetsController(window, view)
@@ -247,6 +251,7 @@ private fun AppRoot(
 
     val now by AudioEngine.now.collectAsState()
     val sound by AudioEngine.sound.collectAsState()
+    val output by AudioEngine.output.collectAsState()
     val settings by vm.settings.collectAsState()
     val tracks by vm.tracks.collectAsState()
     val playlists by vm.playlists.collectAsState()
@@ -283,6 +288,7 @@ private fun AppRoot(
                 playlistCount = playlists.size,
                 voiceLabel = if (sound.voice.ordinal != 0) sound.voice.title else null,
                 eqLabel = if (sound.eqOn && sound.preset != "Ровно") sound.preset else null,
+                outputLabel = output.activeLabel,
                 styleLabel = settings.style.title,
                 sleepActive = sleepAt > 0,
                 nowTitle = if (now.hasMedia) now.title else null,
@@ -388,6 +394,7 @@ private fun FlatDrawerMenu(
     playlistCount: Int,
     voiceLabel: String?,
     eqLabel: String?,
+    outputLabel: String,
     styleLabel: String,
     sleepActive: Boolean,
     nowTitle: String?,
@@ -480,6 +487,13 @@ private fun FlatDrawerMenu(
                     badge = eqLabel,
                     selected = tab == Tab.SOUND && soundSection == 1,
                 ) { onNavigate(Tab.SOUND, 1, null) }
+
+                DrawerItem(
+                    icon = Icons.Rounded.SpeakerGroup,
+                    title = "Вывод и Hi-Res",
+                    badge = outputLabel,
+                    selected = tab == Tab.SOUND && soundSection == 2,
+                ) { onNavigate(Tab.SOUND, 2, null) }
 
                 DrawerItem(
                     icon = Icons.Rounded.Palette,

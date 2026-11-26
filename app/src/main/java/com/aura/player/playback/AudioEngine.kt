@@ -4,6 +4,12 @@ package com.aura.player.playback
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.media.AudioDeviceCallback
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
+import android.os.Handler
+import android.os.Looper
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
@@ -24,6 +30,8 @@ import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.extractor.metadata.icy.IcyInfo
 import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import com.aura.player.data.ArtLoader
+import com.aura.player.data.AudioQualityMode
+import com.aura.player.data.OutputMode
 import com.aura.player.data.Prefs
 import com.aura.player.data.Quality
 import com.aura.player.data.Station
@@ -71,9 +79,37 @@ data class SoundState(
     val bass: Float = 0f,
     val width: Float = 1f,
     val preamp: Float = 0f,
+    val balance: Float = 0f,
+    val mono: Boolean = false,
+    val normalize: Boolean = false,
+    val smoothFade: Boolean = true,
+    val quality: AudioQualityMode = AudioQualityMode.STUDIO_FLOAT,
 )
 
-/** Единый аудио-движок: плеер, очередь, радио, эффекты голоса, эквалайзер, таймер сна. */
+data class OutputState(
+    val mode: OutputMode = OutputMode.AUTO,
+    val forceSpeakerCallMode: Boolean = false,
+    val speakerAvailable: Boolean = true,
+    val headphonesName: String? = null,
+) {
+    val activeLabel: String
+        get() = when {
+            mode == OutputMode.SPEAKER -> if (forceSpeakerCallMode) "Динамик (звонок)" else "Динамик"
+            mode == OutputMode.HEADPHONES && headphonesName != null -> headphonesName
+            headphonesName != null -> headphonesName
+            else -> "Динамик"
+        }
+}
+
+/** Повтор фрагмента A–B (как в AIMP) */
+data class AbLoop(
+    val aMs: Long? = null,
+    val bMs: Long? = null,
+) {
+    val active: Boolean get() = aMs != null && bMs != null
+}
+
+/** Единый аудио-движок: плеер, очередь, радио, DSP, качество вывода, маршрутизация наушники/динамик, A-B повтор. */
 object AudioEngine {
 
     lateinit var player: ExoPlayer
@@ -88,6 +124,8 @@ object AudioEngine {
     val now = MutableStateFlow(NowPlaying())
     val error = MutableStateFlow<String?>(null)
     val sound = MutableStateFlow(SoundState())
+    val output = MutableStateFlow(OutputState())
+    val abLoop = MutableStateFlow(AbLoop())
     val art = MutableStateFlow<Bitmap?>(null)
     val accent = MutableStateFlow<Int?>(null)
     val sleepAt = MutableStateFlow(0L)
@@ -99,6 +137,8 @@ object AudioEngine {
     private var lastId: String? = null
     private var sleepJob: Job? = null
     private var artJob: Job? = null
+    private var fadeJob: Job? = null
+    private var callModeEngaged = false
 
     fun init(context: Context) {
         if (::player.isInitialized) return
@@ -111,32 +151,54 @@ object AudioEngine {
                 enableFloatOutput: Boolean,
                 enableAudioTrackPlaybackParams: Boolean,
             ): AudioSink = DefaultAudioSink.Builder(context)
+                .setEnableFloatOutput(true)
                 .setAudioProcessors(arrayOf<AudioProcessor>(fx))
                 .build()
         }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
 
         val http = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
-            .setUserAgent("Mozilla/5.0 (Linux; Android 14) AuraPlayer/1.0")
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14) AuraPlayer/1.3")
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(20000)
 
         player = ExoPlayer.Builder(app, renderers)
             .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(app, http)))
-            .setAudioAttributes(
-                AudioAttributes.Builder()
-                    .setUsage(C.USAGE_MEDIA)
-                    .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
-                    .build(),
-                true // аудиофокус: пауза при звонке и т.п.
-            )
-            .setHandleAudioBecomingNoisy(true) // пауза при отключении наушников
-            .setWakeMode(C.WAKE_MODE_NETWORK)   // не засыпать с выключенным экраном
+            .setAudioAttributes(mediaAttributes(), true)
+            .setHandleAudioBecomingNoisy(true)
+            .setWakeMode(C.WAKE_MODE_NETWORK)
             .build()
         player.addListener(listener)
 
         restoreSound()
-        startPositionSaver()
+        setupOutputs()
+        startLoops()
+    }
+
+    private fun mediaAttributes() = AudioAttributes.Builder()
+        .setUsage(C.USAGE_MEDIA)
+        .setContentType(C.AUDIO_CONTENT_TYPE_MUSIC)
+        .build()
+
+    private fun callAttributes() = AudioAttributes.Builder()
+        .setUsage(C.USAGE_VOICE_COMMUNICATION)
+        .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
+        .build()
+
+    /** Живая техническая строка потока (как в AIMP: «48.0 kHz · 32-bit Float · Стерео») */
+    fun techSummary(): String {
+        val khz = "%.1f kHz".format(fx.liveSampleRate / 1000f)
+        val bits = when {
+            sound.value.quality == AudioQualityMode.DIRECT_PURE -> "Direct"
+            fx.liveIsFloat -> "32-bit Float"
+            else -> "16-bit PCM"
+        }
+        val ch = when {
+            sound.value.mono || fx.liveChannels == 1 -> "Моно"
+            fx.liveChannels == 2 -> "Стерео"
+            else -> "${fx.liveChannels} кан."
+        }
+        return "$khz · $bits · $ch"
     }
 
     // ======================= Локальные треки =======================
@@ -159,10 +221,15 @@ object AudioEngine {
         if (list.isEmpty()) return
         currentStation = null
         currentStream = null
+        abLoop.value = AbLoop()
         queueTracks = list
+        player.volume = 1f
         player.setMediaItems(list.map { itemOf(it) }, index.coerceIn(0, list.lastIndex), startPos)
         player.prepare()
-        if (autoplay) player.play()
+        if (autoplay) {
+            applyOutput(forPlaying = true)
+            player.play()
+        }
         refresh()
     }
 
@@ -185,6 +252,7 @@ object AudioEngine {
 
     fun jumpTo(index: Int) {
         if (index in 0 until player.mediaItemCount) {
+            abLoop.value = AbLoop()
             player.seekTo(index, 0L)
             player.play()
         }
@@ -210,6 +278,7 @@ object AudioEngine {
         triedStreams += s.url
         currentStation = st
         currentStream = s
+        abLoop.value = AbLoop()
         queueTracks = emptyList()
         error.value = null
         now.update { it.copy(isRadio = true, station = st, stream = s, title = st.name, artist = st.genre, buffering = true, streamTitle = null, track = null) }
@@ -219,7 +288,7 @@ object AudioEngine {
         scope.launch {
             val url = try {
                 withContext(Dispatchers.IO) { StreamResolver.resolve(s.url) }
-            } catch (e: Exception) {
+            } catch (_: Exception) {
                 error.value = "Станция «${st.name}» сейчас недоступна"
                 now.update { it.copy(buffering = false) }
                 return@launch
@@ -238,8 +307,10 @@ object AudioEngine {
                         .build()
                 )
             if (url.contains(".m3u8", true) || s.codec == "HLS") b.setMimeType(MimeTypes.APPLICATION_M3U8)
+            player.volume = 1f
             player.setMediaItem(b.build())
             player.prepare()
+            applyOutput(forPlaying = true)
             player.play()
         }
     }
@@ -255,21 +326,54 @@ object AudioEngine {
             .build()
     }
 
-    // ======================= Управление =======================
+    // ======================= Управление + плавное затухание (AIMP) =======================
 
     fun toggle() {
         if (player.mediaItemCount == 0) return
-        if (player.isPlaying) player.pause() else {
+        fadeJob?.cancel()
+        val smooth = sound.value.smoothFade && !now.value.isRadio
+        if (player.isPlaying) {
+            if (smooth) {
+                fadeJob = scope.launch {
+                    for (i in 8 downTo 0) {
+                        player.volume = i / 8f
+                        delay(20)
+                    }
+                    player.pause()
+                    player.volume = 1f
+                    releaseCallRoutingIfNeeded()
+                }
+            } else {
+                player.pause()
+                releaseCallRoutingIfNeeded()
+            }
+        } else {
             if (player.playbackState == Player.STATE_IDLE) player.prepare()
             if (player.playbackState == Player.STATE_ENDED) player.seekTo(player.currentMediaItemIndex, 0L)
-            player.play()
+            applyOutput(forPlaying = true)
+            if (smooth) {
+                player.volume = 0f
+                player.play()
+                fadeJob = scope.launch {
+                    for (i in 1..8) {
+                        player.volume = i / 8f
+                        delay(22)
+                    }
+                }
+            } else {
+                player.volume = 1f
+                player.play()
+            }
         }
     }
 
-    fun next() { if (player.hasNextMediaItem()) player.seekToNextMediaItem() else if (player.mediaItemCount > 0) player.seekTo(0, 0L) }
-    fun prev() { if (player.currentPosition > 3000 || !player.hasPreviousMediaItem()) player.seekTo(0L) else player.seekToPreviousMediaItem() }
-    fun seekTo(ms: Long) = player.seekTo(ms)
-    fun seekBy(ms: Long) = player.seekTo((player.currentPosition + ms).coerceAtLeast(0L))
+    fun next() { abLoop.value = AbLoop(); if (player.hasNextMediaItem()) player.seekToNextMediaItem() else if (player.mediaItemCount > 0) player.seekTo(0, 0L) }
+    fun prev() { abLoop.value = AbLoop(); if (player.currentPosition > 3000 || !player.hasPreviousMediaItem()) player.seekTo(0L) else player.seekToPreviousMediaItem() }
+    fun seekTo(ms: Long) = player.seekTo(ms.coerceAtLeast(0L))
+    fun seekBy(ms: Long) {
+        val dur = player.duration.takeIf { it > 0 } ?: Long.MAX_VALUE
+        player.seekTo((player.currentPosition + ms).coerceIn(0L, dur))
+    }
     fun toggleShuffle() { player.shuffleModeEnabled = !player.shuffleModeEnabled }
     fun cycleRepeat() {
         player.repeatMode = when (player.repeatMode) {
@@ -279,11 +383,28 @@ object AudioEngine {
         }
     }
 
+    /** A–B повтор фрагмента: 1-е нажатие = точка A, 2-е = точка B (зацикливает), 3-е = сброс */
+    fun tapAbLoop() {
+        if (now.value.isRadio || !now.value.hasMedia) return
+        val cur = abLoop.value
+        val pos = player.currentPosition.coerceAtLeast(0L)
+        abLoop.value = when {
+            cur.aMs == null -> AbLoop(aMs = pos, bMs = null)
+            cur.bMs == null -> if (pos > cur.aMs + 800) AbLoop(aMs = cur.aMs, bMs = pos) else AbLoop()
+            else -> AbLoop()
+        }
+    }
+
+    fun clearAbLoop() { abLoop.value = AbLoop() }
+
     fun stop() {
+        fadeJob?.cancel()
+        abLoop.value = AbLoop()
         player.stop()
         player.clearMediaItems()
         queueTracks = emptyList()
         currentStation = null
+        releaseCallRoutingIfNeeded()
         refresh()
     }
 
@@ -296,10 +417,10 @@ object AudioEngine {
         sleepAt.value = at
         sleepJob = scope.launch {
             while (isActive && System.currentTimeMillis() < at) delay(1000)
-            // плавное затухание
             for (i in 10 downTo 1) { player.volume = i / 10f; delay(300) }
             player.pause()
             player.volume = 1f
+            releaseCallRoutingIfNeeded()
             sleepAt.value = 0L
         }
     }
@@ -324,14 +445,13 @@ object AudioEngine {
         override fun onPlayerError(e: PlaybackException) {
             val st = currentStation
             if (now.value.isRadio && st != null) {
-                // пробуем другой битрейт этой же станции
                 val alt = st.streams.firstOrNull { it.url !in triedStreams }
                 if (alt != null) {
                     error.value = "Поток ${currentStream?.label ?: ""} не отвечает — пробую ${alt.label} кбит/с"
                     playStation(st, alt)
                     return
                 }
-                error.value = "Не удалось подключиться к «${st.name}». Попробуйте позже или найдите станцию в онлайн-каталоге."
+                error.value = "Не удалось подключиться к «${st.name}». Попробуйте другой битрейт или онлайн-каталог."
             } else {
                 error.value = "Не удалось воспроизвести файл (${e.errorCodeName})"
                 if (player.hasNextMediaItem()) {
@@ -373,10 +493,12 @@ object AudioEngine {
             )
         }
         if (changed) {
+            abLoop.value = AbLoop()
             applyPlayback()
             if (!isRadio) loadArt(track?.uri)
         }
         if (p.isPlaying && error.value != null) error.value = null
+        if (!p.isPlaying && !p.playWhenReady) releaseCallRoutingIfNeeded()
     }
 
     private fun loadArt(uri: String?) {
@@ -389,25 +511,11 @@ object AudioEngine {
         }
     }
 
-    // ======================= Голос / скорость / эквалайзер =======================
+    // ======================= Голос / Эквалайзер / Качество DSP =======================
 
-    fun setVoice(v: VoiceEffect) {
-        sound.update { it.copy(voice = v) }
-        prefs.voice = v.name
-        applyPlayback()
-    }
-
-    fun setPitch(semis: Float) {
-        sound.update { it.copy(pitchSemis = semis) }
-        prefs.pitchSemis = semis
-        applyPlayback()
-    }
-
-    fun setSpeed(s: Float) {
-        sound.update { it.copy(speed = s) }
-        prefs.speed = s
-        applyPlayback()
-    }
+    fun setVoice(v: VoiceEffect) { sound.update { it.copy(voice = v) }; prefs.voice = v.name; applyPlayback() }
+    fun setPitch(semis: Float) { sound.update { it.copy(pitchSemis = semis) }; prefs.pitchSemis = semis; applyPlayback() }
+    fun setSpeed(s: Float) { sound.update { it.copy(speed = s) }; prefs.speed = s; applyPlayback() }
 
     private fun applyPlayback() {
         val st = sound.value
@@ -435,10 +543,37 @@ object AudioEngine {
     fun setBass(v: Float) { sound.update { it.copy(bass = v) }; prefs.bass = v; pushEq() }
     fun setPreamp(v: Float) { sound.update { it.copy(preamp = v) }; prefs.preamp = v; pushEq() }
     fun setWidth(v: Float) { sound.update { it.copy(width = v) }; prefs.width = v; fx.width = v }
+    fun setBalance(v: Float) { sound.update { it.copy(balance = v) }; prefs.balance = v; fx.balance = v }
+    fun setMono(v: Boolean) { sound.update { it.copy(mono = v) }; prefs.mono = v; fx.mono = v }
+    fun setNormalize(v: Boolean) { sound.update { it.copy(normalize = v) }; prefs.normalize = v; fx.normalize = v }
+    fun setSmoothFade(v: Boolean) { sound.update { it.copy(smoothFade = v) }; prefs.smoothFade = v }
+
+    fun setAudioQuality(q: AudioQualityMode) {
+        prefs.audioQuality = q.ordinal
+        sound.update { it.copy(quality = q) }
+        applyQualityToFx(reconfigure = true)
+    }
+
+    private fun applyQualityToFx(reconfigure: Boolean) {
+        val q = sound.value.quality
+        fx.directBypass = q == AudioQualityMode.DIRECT_PURE
+        fx.preferFloat = q == AudioQualityMode.STUDIO_FLOAT
+        if (reconfigure && ::player.isInitialized && player.mediaItemCount > 0) {
+            // Перезапускаем аудио-конвейер на текущей позиции, чтобы 32-bit Float / 16-bit PCM применилось сразу
+            val pos = player.currentPosition
+            val wasPlaying = player.isPlaying
+            val idx = player.currentMediaItemIndex
+            player.stop()
+            player.prepare()
+            if (!now.value.isRadio && idx >= 0) player.seekTo(idx, pos)
+            if (wasPlaying) player.play()
+        }
+    }
 
     fun resetSound() {
         setVoice(VoiceEffect.NORMAL); setPitch(0f); setSpeed(1f)
         applyPreset(EqPresets.all.first()); setBass(0f); setPreamp(0f); setWidth(1f)
+        setBalance(0f); setMono(false); setNormalize(false)
     }
 
     private fun pushEq() {
@@ -450,31 +585,152 @@ object AudioEngine {
     private fun restoreSound() {
         val v = runCatching { VoiceEffect.valueOf(prefs.voice) }.getOrDefault(VoiceEffect.NORMAL)
         val gains = prefs.eqGains.split(',').mapNotNull { it.toFloatOrNull() }.takeIf { it.size == 10 } ?: List(10) { 0f }
+        val q = AudioQualityMode.of(prefs.audioQuality)
         sound.value = SoundState(
             voice = v, pitchSemis = prefs.pitchSemis, speed = prefs.speed, eqOn = prefs.eqEnabled,
             gains = gains, preset = prefs.eqPreset, bass = prefs.bass, width = prefs.width, preamp = prefs.preamp,
+            balance = prefs.balance, mono = prefs.mono, normalize = prefs.normalize, smoothFade = prefs.smoothFade,
+            quality = q,
         )
         fx.width = prefs.width
+        fx.balance = prefs.balance
+        fx.mono = prefs.mono
+        fx.normalize = prefs.normalize
+        applyQualityToFx(reconfigure = false)
         pushEq()
         applyPlayback()
     }
 
-    // ======================= Запоминание позиции =======================
+    // ======================= Маршрутизация вывода: Авто / Динамик / Наушники (в т.ч. «как при звонке») =======================
 
-    private fun startPositionSaver() {
+    private val headphoneTypes = setOf(
+        AudioDeviceInfo.TYPE_WIRED_HEADSET,
+        AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+        22, // TYPE_USB_HEADSET
+        26, // TYPE_BLE_HEADSET
+        23, // TYPE_HEARING_AID
+    )
+
+    private fun setupOutputs() {
+        val savedMode = OutputMode.of(prefs.outputMode)
+        output.update { it.copy(mode = savedMode, forceSpeakerCallMode = prefs.forceSpeakerCallMode) }
+        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        am.registerAudioDeviceCallback(object : AudioDeviceCallback() {
+            override fun onAudioDevicesAdded(addedDevices: Array<out AudioDeviceInfo>?) = refreshOutputs()
+            override fun onAudioDevicesRemoved(removedDevices: Array<out AudioDeviceInfo>?) = refreshOutputs()
+        }, Handler(Looper.getMainLooper()))
+        refreshOutputs()
+    }
+
+    private fun findDevice(mode: OutputMode): AudioDeviceInfo? {
+        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devices = am.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        return when (mode) {
+            OutputMode.AUTO -> null
+            OutputMode.SPEAKER -> devices.firstOrNull { it.type == AudioDeviceInfo.TYPE_BUILTIN_SPEAKER }
+            OutputMode.HEADPHONES -> devices.firstOrNull { it.type in headphoneTypes }
+        }
+    }
+
+    fun refreshOutputs() {
+        val hp = findDevice(OutputMode.HEADPHONES)
+        val sp = findDevice(OutputMode.SPEAKER)
+        output.update {
+            it.copy(
+                speakerAvailable = sp != null,
+                headphonesName = hp?.let { d ->
+                    val prod = d.productName?.toString()?.takeIf { n -> n.isNotBlank() && d.type == AudioDeviceInfo.TYPE_BLUETOOTH_A2DP }
+                    prod ?: when (d.type) {
+                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP, 26 -> "Bluetooth"
+                        22 -> "USB-наушники"
+                        else -> "Проводные наушники"
+                    }
+                },
+            )
+        }
+        applyOutput(forPlaying = player.isPlaying)
+    }
+
+    fun setOutputMode(mode: OutputMode) {
+        prefs.outputMode = mode.ordinal
+        output.update { it.copy(mode = mode) }
+        applyOutput(forPlaying = player.isPlaying || player.playWhenReady)
+    }
+
+    fun setForceSpeakerCallMode(on: Boolean) {
+        prefs.forceSpeakerCallMode = on
+        output.update { it.copy(forceSpeakerCallMode = on) }
+        applyOutput(forPlaying = player.isPlaying || player.playWhenReady)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun applyOutput(forPlaying: Boolean) {
+        val st = output.value
+        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val wantCallSpeaker = st.mode == OutputMode.SPEAKER && st.forceSpeakerCallMode && forPlaying
+
+        if (wantCallSpeaker) {
+            callModeEngaged = true
+            runCatching {
+                player.setAudioAttributes(callAttributes(), true)
+                am.mode = AudioManager.MODE_IN_COMMUNICATION
+                val sp = findDevice(OutputMode.SPEAKER)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && sp != null) {
+                    am.setCommunicationDevice(sp)
+                } else {
+                    am.isSpeakerphoneOn = true
+                }
+                player.setPreferredAudioDevice(sp)
+            }
+        } else {
+            releaseCallRoutingIfNeeded()
+            runCatching {
+                player.setPreferredAudioDevice(findDevice(st.mode))
+            }
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun releaseCallRoutingIfNeeded() {
+        if (!callModeEngaged) return
+        callModeEngaged = false
+        val am = app.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        runCatching {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) am.clearCommunicationDevice()
+            else am.isSpeakerphoneOn = false
+            am.mode = AudioManager.MODE_NORMAL
+            player.setAudioAttributes(mediaAttributes(), true)
+        }
+    }
+
+    // ======================= Фоновые циклы (позиция + A-B повтор) =======================
+
+    private fun startLoops() {
         scope.launch {
+            var saveTick = 0
             while (isActive) {
-                delay(4000)
-                val t = now.value.track
-                if (t != null && !now.value.isRadio) {
-                    prefs.lastUri = t.uri
-                    prefs.lastPos = player.currentPosition
+                delay(200)
+                // A–B повтор фрагмента
+                val ab = abLoop.value
+                if (ab.active && player.isPlaying && !now.value.isRadio) {
+                    val pos = player.currentPosition
+                    if (pos >= ab.bMs!!) player.seekTo(ab.aMs!!)
+                }
+                // сохранение позиции каждые 4 сек
+                saveTick++
+                if (saveTick >= 20) {
+                    saveTick = 0
+                    val t = now.value.track
+                    if (t != null && !now.value.isRadio) {
+                        prefs.lastUri = t.uri
+                        prefs.lastPos = player.currentPosition
+                    }
                 }
             }
         }
     }
 
-    /** После запуска приложения — восстановить последний трек на паузе */
     fun restoreLast(library: List<Track>) {
         if (player.mediaItemCount > 0) return
         val uri = prefs.lastUri

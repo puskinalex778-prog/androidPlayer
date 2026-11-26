@@ -22,6 +22,38 @@ data class Playlist(
     val uris: List<String> = emptyList(),
 )
 
+/** Пользовательская цветовая тема. */
+data class CustomTheme(
+    val id: String,
+    val name: String,
+    val accentArgb: Int,
+    val secondaryArgb: Int,
+    val bgArgb: Int,
+    val isDark: Boolean = true,
+)
+
+/** Режим качества вывода звука (как в AIMP / Hi-Res плеерах). */
+enum class AudioQualityMode(val title: String, val desc: String, val badge: String) {
+    STUDIO_FLOAT("Hi-Res 32-bit Float", "Максимальная точность DSP без искажений и клиппинга", "32-bit FLOAT"),
+    HIFI_PCM("Стандарт 16-bit PCM", "Классический вывод — лучшая совместимость с Bluetooth и авто", "16-bit PCM"),
+    DIRECT_PURE("Direct (без обработки)", "Чистый сигнал в обход эквалайзера и эффектов, экономит заряд", "DIRECT");
+
+    companion object {
+        fun of(index: Int): AudioQualityMode = entries.getOrElse(index) { STUDIO_FLOAT }
+    }
+}
+
+/** Режим маршрутизации вывода звука. */
+enum class OutputMode(val title: String) {
+    AUTO("Авто"),
+    SPEAKER("Динамик"),
+    HEADPHONES("Наушники / BT");
+
+    companion object {
+        fun of(index: Int): OutputMode = entries.getOrElse(index) { AUTO }
+    }
+}
+
 /** Один поток станции — конкретный битрейт. */
 data class StreamOption(
     val bitrate: Int,          // кбит/с; 0 = адаптивный (HLS) / неизвестно
@@ -58,7 +90,7 @@ enum class Country(val code: String, val title: String, val flag: String) {
     }
 }
 
-/** Качество потока по умолчанию */
+/** Качество интернет-радио по умолчанию */
 enum class Quality(val title: String) {
     LOW("Эконом"), MEDIUM("Стандарт"), HIGH("Максимум");
 }

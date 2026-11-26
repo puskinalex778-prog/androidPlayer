@@ -33,6 +33,8 @@ import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.CreateNewFolder
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.Edit
+import androidx.compose.material.icons.rounded.Favorite
+import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
@@ -103,12 +105,14 @@ fun LibraryScreen(
     val c = LocalAura.current
     val tracks by vm.tracks.collectAsState()
     val playlists by vm.playlists.collectAsState()
+    val favTracks by vm.favoriteTracks.collectAsState()
     val addProgress by vm.addProgress.collectAsState()
     val now by AudioEngine.now.collectAsState()
     val sort by vm.sort.collectAsState()
 
     var query by rememberSaveable { mutableStateOf("") }
     var onlySd by rememberSaveable { mutableStateOf(false) }
+    var onlyFav by rememberSaveable { mutableStateOf(false) }
     var group by rememberSaveable { mutableStateOf<String?>(null) }
     var openPlaylistId by rememberSaveable { mutableStateOf<String?>(null) }
 
@@ -121,10 +125,11 @@ fun LibraryScreen(
 
     val openPlaylist = remember(playlists, openPlaylistId) { playlists.firstOrNull { it.id == openPlaylistId } }
     val sdCount = remember(tracks) { tracks.count { it.onSdCard } }
+    val favCount = remember(tracks, favTracks) { tracks.count { it.uri in favTracks } }
 
-    val filtered = remember(tracks, query, onlySd) {
+    val filtered = remember(tracks, query, onlySd, onlyFav, favTracks) {
         tracks.filter { t ->
-            (!onlySd || t.onSdCard) && (
+            (!onlySd || t.onSdCard) && (!onlyFav || t.uri in favTracks) && (
                 query.isBlank() ||
                     t.title.contains(query, true) ||
                     t.artist.contains(query, true) ||
@@ -209,6 +214,9 @@ fun LibraryScreen(
                         val label = if (t == LibTab.PLAYLISTS && playlists.isNotEmpty()) "${t.title} (${playlists.size})" else t.title
                         FlatChip(label, tab == t, onClick = { onTabChange(t); group = null; openPlaylistId = null }, icon = t.icon)
                     }
+                    if (favCount > 0 && tab != LibTab.PLAYLISTS) {
+                        FlatChip("Любимые ($favCount)", onlyFav, onClick = { onlyFav = !onlyFav }, icon = Icons.Rounded.Favorite)
+                    }
                     if (sdCount > 0 && tab != LibTab.PLAYLISTS) {
                         FlatChip("SD ($sdCount)", onlySd, onClick = { onlySd = !onlySd }, icon = Icons.Rounded.SdCard)
                     }
@@ -255,6 +263,8 @@ fun LibraryScreen(
                         TrackRow(
                             t = t,
                             playing = now.track?.uri == t.uri,
+                            liked = t.uri in favTracks,
+                            onToggleLike = { vm.toggleFavoriteTrack(t.uri) },
                             onClick = { vm.play(plTracks, t) },
                             onAddToPlaylist = { addTrackToPl = t },
                             removeLabel = "Убрать из плейлиста",
@@ -399,6 +409,8 @@ fun LibraryScreen(
                         TrackRow(
                             t = t,
                             playing = now.track?.uri == t.uri,
+                            liked = t.uri in favTracks,
+                            onToggleLike = { vm.toggleFavoriteTrack(t.uri) },
                             onClick = { vm.play(shown, t) },
                             onAddToPlaylist = { addTrackToPl = t },
                             onRemove = { vm.remove(t) },
@@ -669,6 +681,8 @@ private fun CompactAddBtn(label: String, icon: ImageVector, modifier: Modifier, 
 fun TrackRow(
     t: Track,
     playing: Boolean,
+    liked: Boolean,
+    onToggleLike: () -> Unit,
     onClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onRemove: () -> Unit,
@@ -719,6 +733,9 @@ fun TrackRow(
                 )
             }
         }
+        if (liked) {
+            Icon(Icons.Rounded.Favorite, null, tint = c.danger, modifier = Modifier.size(15.dp).padding(end = 2.dp))
+        }
         if (t.format.isNotBlank()) {
             Text(
                 t.format,
@@ -737,6 +754,11 @@ fun TrackRow(
                 Icon(Icons.Rounded.MoreVert, "Ещё", tint = c.textDim, modifier = Modifier.size(20.dp))
             }
             DropdownMenu(menu, onDismissRequest = { menu = false }, containerColor = c.surfaceSolid) {
+                DropdownMenuItem(
+                    text = { Text(if (liked) "Убрать из любимых" else "В любимые") },
+                    leadingIcon = { Icon(if (liked) Icons.Rounded.Favorite else Icons.Rounded.FavoriteBorder, null, tint = if (liked) c.danger else c.text) },
+                    onClick = { menu = false; onToggleLike() },
+                )
                 DropdownMenuItem(
                     text = { Text("Добавить в плейлист") },
                     leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null) },

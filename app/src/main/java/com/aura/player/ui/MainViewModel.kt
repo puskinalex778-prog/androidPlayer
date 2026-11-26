@@ -4,6 +4,7 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.aura.player.data.CustomTheme
 import com.aura.player.data.Library
 import com.aura.player.data.Playlist
 import com.aura.player.data.RadioBrowser
@@ -23,11 +24,12 @@ import kotlinx.coroutines.withContext
 
 data class UiSettings(
     val theme: AuraTheme = AuraTheme.COBALT,
+    val activeCustomThemeId: String = "",
     val style: UiStyle = UiStyle.FLAT,
     val visualizer: VisualizerType = VisualizerType.BARS,
     val darkMode: Int = 0,
     val amoled: Boolean = false,
-    val adaptive: Boolean = true,
+    val adaptive: Boolean = false,
     val playerStage: Int = 0, // 0 = Кассета, 1 = Обложка, 2 = Визуал
     val quality: Int = 1,
 )
@@ -55,6 +57,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- медиатека (только добавленные пользователем треки; файлы не копируются) ----------
     val tracks = MutableStateFlow<List<Track>>(emptyList())
     val playlists = MutableStateFlow<List<Playlist>>(Library.loadPlaylists(ctx))
+    val favoriteTracks = MutableStateFlow(prefs.favoriteTracks)
+    val customThemes = MutableStateFlow(prefs.customThemes)
+    val previewCustomTheme = MutableStateFlow<CustomTheme?>(null)
     val addProgress = MutableStateFlow<Int?>(null)
     val toast = MutableStateFlow<String?>(null)
     val sort = MutableStateFlow(prefs.sort)
@@ -71,6 +76,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val settings = MutableStateFlow(
         UiSettings(
             theme = AuraTheme.fromName(prefs.theme),
+            activeCustomThemeId = prefs.activeCustomThemeId,
             style = UiStyle.fromName(prefs.uiStyle),
             visualizer = VisualizerType.fromName(prefs.visualizer),
             darkMode = prefs.darkMode,
@@ -392,15 +398,65 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         return p.uris.mapNotNull { map[it] }
     }
 
-    // ===================== Настройки =====================
+    // ===================== Избранные треки =====================
 
-    fun setTheme(t: AuraTheme) { prefs.theme = t.name; settings.update { it.copy(theme = t) } }
+    fun toggleFavoriteTrack(uri: String) {
+        val next = favoriteTracks.value.toMutableSet()
+        if (!next.add(uri)) next.remove(uri)
+        favoriteTracks.value = next
+        prefs.favoriteTracks = next
+    }
+
+    // ===================== Настройки и пользовательские темы =====================
+
+    fun setTheme(t: AuraTheme) {
+        prefs.theme = t.name
+        prefs.activeCustomThemeId = ""
+        prefs.adaptiveColor = false
+        previewCustomTheme.value = null
+        settings.update { it.copy(theme = t, activeCustomThemeId = "", adaptive = false) }
+    }
+
+    fun selectCustomTheme(id: String) {
+        prefs.activeCustomThemeId = id
+        prefs.adaptiveColor = false
+        previewCustomTheme.value = null
+        settings.update { it.copy(activeCustomThemeId = id, adaptive = false) }
+    }
+
+    fun saveCustomTheme(ct: CustomTheme) {
+        val clean = ct.copy(name = ct.name.trim().ifBlank { "Моя тема ${customThemes.value.size + 1}" })
+        val list = customThemes.value.filterNot { it.id == clean.id } + clean
+        customThemes.value = list
+        prefs.customThemes = list
+        selectCustomTheme(clean.id)
+        toast.value = "Тема «${clean.name}» сохранена"
+    }
+
+    fun deleteCustomTheme(id: String) {
+        val list = customThemes.value.filterNot { it.id == id }
+        customThemes.value = list
+        prefs.customThemes = list
+        if (settings.value.activeCustomThemeId == id) {
+            prefs.activeCustomThemeId = ""
+            settings.update { it.copy(activeCustomThemeId = "") }
+        }
+    }
+
     fun setUiStyle(s: UiStyle) { prefs.uiStyle = s.name; settings.update { it.copy(style = s) } }
     fun setVisualizer(v: VisualizerType) { prefs.visualizer = v.name; settings.update { it.copy(visualizer = v) } }
     fun cycleVisualizer() { setVisualizer(settings.value.visualizer.next()) }
     fun setDarkMode(m: Int) { prefs.darkMode = m; settings.update { it.copy(darkMode = m) } }
     fun setAmoled(v: Boolean) { prefs.amoled = v; settings.update { it.copy(amoled = v) } }
-    fun setAdaptive(v: Boolean) { prefs.adaptiveColor = v; settings.update { it.copy(adaptive = v) } }
+    fun setAdaptive(v: Boolean) {
+        prefs.adaptiveColor = v
+        if (v) {
+            prefs.activeCustomThemeId = ""
+            settings.update { it.copy(adaptive = true, activeCustomThemeId = "") }
+        } else {
+            settings.update { it.copy(adaptive = false) }
+        }
+    }
     fun setPlayerStage(stage: Int) {
         val s = stage.coerceIn(0, 2)
         prefs.playerStage = s

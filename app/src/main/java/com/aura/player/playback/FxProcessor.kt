@@ -16,28 +16,42 @@ import kotlin.math.sqrt
 import kotlin.math.tanh
 
 /**
- * Единый DSP-процессор в аудио-цепочке ExoPlayer (PCM 16 бит):
- *  1. тембровые эффекты голоса (робот, эхо, зал, телефон, винил, караоке…);
- *  2. 10-полосный параметрический эквалайзер + усиление баса (работает на ЛЮБОМ телефоне,
- *     не зависит от системного эквалайзера производителя);
- *  3. расширение стереобазы и мягкий лимитер;
- *  4. «отвод» сигнала для визуализации — без разрешения на микрофон.
- * Высота тона (гелий, демон, бурундук…) меняется через PlaybackParameters (Sonic).
+ * Профессиональный DSP-процессор в аудио-цепочке ExoPlayer (в духе AIMP):
+ *  - поддерживает как 16-bit PCM, так и Hi-Res 32-bit Float (без потерь динамического диапазона);
+ *  - режим Direct (чистый обход без обработки);
+ *  - тембровые эффекты голоса (робот, эхо, зал, телефон, винил, караоке…);
+ *  - 10-полосный параметрический эквалайзер + усиление баса;
+ *  - стерео-баланс Л/П, расширение стереобазы, режим Моно;
+ *  - мягкая автонормализация громкости (Auto-Level / RMS);
+ *  - отвод сигнала в реальном времени для визуализаторов (без микрофона).
  */
 @UnstableApi
 class FxProcessor : BaseAudioProcessor() {
 
     enum class Mode { NONE, ROBOT, ECHO, HALL, DISTORT, TELEPHONE, UNDERWATER, DEMON, VINYL, KARAOKE }
 
-    // ---------- параметры (меняются из UI-потока) ----------
+    // ---------- параметры ----------
     @Volatile var mode: Mode = Mode.NONE
+    @Volatile var directBypass: Boolean = false
+    @Volatile var preferFloat: Boolean = true
     @Volatile private var gains = FloatArray(10)
     @Volatile private var eqOn = true
     @Volatile private var bassDb = 0f
     @Volatile var width = 1f
+    @Volatile var balance = 0f        // -1 (Л) .. 0 .. +1 (П)
+    @Volatile var mono = false
+    @Volatile var normalize = false
     @Volatile private var preampDb = 0f
     @Volatile private var version = 1
     private var applied = 0
+
+    // живая телеметрия для бейджа качества (как в AIMP)
+    @Volatile var liveSampleRate = 44100
+        private set
+    @Volatile var liveChannels = 2
+        private set
+    @Volatile var liveIsFloat = false
+        private set
 
     fun setEq(enabled: Boolean, g: FloatArray, bass: Float, preamp: Float) {
         gains = g.copyOf()
@@ -53,7 +67,6 @@ class FxProcessor : BaseAudioProcessor() {
     @Volatile var lastWriteNs = 0L
         private set
 
-    /** Последние out.size отсчётов (моно), которые прошли через процессор */
     fun snapshot(out: FloatArray) {
         val p = ringPos
         val n = out.size
@@ -65,8 +78,10 @@ class FxProcessor : BaseAudioProcessor() {
     // ---------- состояние ----------
     private var sampleRate = 44100
     private var channels = 2
+    private var inFloat = false
+    private var outFloat = false
 
-    private val nFilters = 11 // 10 полос + полка баса
+    private val nFilters = 11
     private val coef = DoubleArray(nFilters * 5)
     private var zs = DoubleArray(nFilters * 2 * 2)
     private var activeFilters = IntArray(0)
@@ -82,8 +97,8 @@ class FxProcessor : BaseAudioProcessor() {
     private var lfo = 0.0
     private var crackle = 0f
     private var rnd = 22222
+    private var rmsEnv = 0.2f
 
-    // реверберация (Freeverb-подобная)
     private val combBase = intArrayOf(1116, 1188, 1277, 1356)
     private val apBase = intArrayOf(556, 441)
     private var combs: Array<Array<FloatArray>> = emptyArray()
@@ -95,21 +110,33 @@ class FxProcessor : BaseAudioProcessor() {
     private val frame = FloatArray(8)
 
     override fun onConfigure(inputAudioFormat: AudioProcessor.AudioFormat): AudioProcessor.AudioFormat {
-        if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT) {
-            // Другие форматы просто пропускаем без обработки
+        if (inputAudioFormat.encoding != C.ENCODING_PCM_16BIT && inputAudioFormat.encoding != C.ENCODING_PCM_FLOAT) {
             return AudioProcessor.AudioFormat.NOT_SET
         }
-        return inputAudioFormat
+        val targetEnc = when {
+            directBypass -> inputAudioFormat.encoding
+            preferFloat -> C.ENCODING_PCM_FLOAT
+            else -> C.ENCODING_PCM_16BIT
+        }
+        return AudioProcessor.AudioFormat(inputAudioFormat.sampleRate, inputAudioFormat.channelCount, targetEnc)
     }
 
     override fun onFlush() {
         sampleRate = inputAudioFormat.sampleRate.takeIf { it > 0 } ?: 44100
         channels = inputAudioFormat.channelCount.coerceIn(1, 8)
+        inFloat = inputAudioFormat.encoding == C.ENCODING_PCM_FLOAT
+        outFloat = outputAudioFormat.encoding == C.ENCODING_PCM_FLOAT
+        liveSampleRate = sampleRate
+        liveChannels = channels
+        liveIsFloat = outFloat
+
         delayLen = sampleRate
         delay = Array(channels) { FloatArray(delayLen) }
         pos = 0
         lpA.fill(0f); lpB.fill(0f); hpLp.fill(0f)
         zs = DoubleArray(nFilters * channels * 2)
+        rmsEnv = 0.2f
+
         val k = sampleRate / 44100.0
         combs = Array(channels) { c -> Array(4) { i -> FloatArray(((combBase[i] + c * 23) * k).toInt().coerceAtLeast(16)) } }
         combPos = Array(channels) { IntArray(4) }
@@ -126,7 +153,6 @@ class FxProcessor : BaseAudioProcessor() {
         aps = emptyArray()
     }
 
-    // ---------- коэффициенты биквадов (RBJ cookbook) ----------
     private fun recompute() {
         applied = version
         val g = gains
@@ -190,34 +216,49 @@ class FxProcessor : BaseAudioProcessor() {
         return ((rnd ushr 8) and 0xFFFF) / 32768f - 1f
     }
 
-    // ---------- обработка ----------
     override fun queueInput(inputBuffer: ByteBuffer) {
         val size = inputBuffer.remaining()
         if (size == 0) return
-        val out = replaceOutputBuffer(size)
         if (applied != version) recompute()
+
         val ch = channels
+        val inFl = inFloat
+        val outFl = outFloat
+        val inBps = if (inFl) 4 else 2
+        val outBps = if (outFl) 4 else 2
+        val inFrameBytes = inBps * ch
+        val frames = size / inFrameBytes
+        if (frames <= 0) {
+            inputBuffer.position(inputBuffer.limit())
+            return
+        }
+        val out = replaceOutputBuffer(frames * ch * outBps)
+
         val m = mode
         val filters = activeFilters
         val g = gainLin
         val w = width
+        val bal = balance
+        val isMono = mono
+        val isNorm = normalize
         val stereo = ch == 2
-        val bypass = m == Mode.NONE && filters.isEmpty() && abs(g - 1f) < 0.001f && (!stereo || abs(w - 1f) < 0.01f)
+        val bypass = directBypass || (
+            m == Mode.NONE && filters.isEmpty() && abs(g - 1f) < 0.001f &&
+                (!stereo || (abs(w - 1f) < 0.01f && abs(bal) < 0.01f && !isMono)) && !isNorm
+            )
         val ready = delay.size == ch && delayLen > 0
 
         if (bypass || !ready) {
-            // Без обработки — только копируем и берём сигнал для визуализации
-            val start = inputBuffer.position()
-            out.put(inputBuffer)
-            out.flip()
-            var i = start
-            val limit = start + size
-            while (i + 2 * ch <= limit) {
+            for (f in 0 until frames) {
                 var s = 0f
-                for (c in 0 until ch) s += out.getShort(i - start + c * 2) / 32768f
+                for (c in 0 until ch) {
+                    val v = if (inFl) inputBuffer.float else inputBuffer.short / 32768f
+                    s += v
+                    if (outFl) out.putFloat(v) else out.putShort((v.coerceIn(-1f, 1f) * 32767f).toInt().toShort())
+                }
                 tap(s / ch)
-                i += 2 * ch
             }
+            out.flip()
             lastWriteNs = System.nanoTime()
             return
         }
@@ -236,12 +277,19 @@ class FxProcessor : BaseAudioProcessor() {
         val aVinylLp = coefLp(5500f)
         val aKaraokeLp = coefLp(160f)
 
-        while (inputBuffer.remaining() >= 2 * ch) {
-            for (c in 0 until ch) frame[c] = inputBuffer.short / 32768f
+        val balL = if (bal > 0f) 1f - bal else 1f
+        val balR = if (bal < 0f) 1f + bal else 1f
+        val normAlpha = 1f / (sr * 0.45f)
+
+        for (fIdx in 0 until frames) {
+            if (inFl) {
+                for (c in 0 until ch) frame[c] = inputBuffer.float
+            } else {
+                for (c in 0 until ch) frame[c] = inputBuffer.short / 32768f
+            }
 
             // ---- 1. эффект голоса ----
             if (m == Mode.KARAOKE && stereo) {
-                // убираем то, что звучит по центру (обычно вокал), но сохраняем бас
                 val l = frame[0]; val r = frame[1]
                 val mid = (l + r) * 0.5f
                 lpA[0] += aKaraokeLp * (mid - lpA[0])
@@ -324,21 +372,42 @@ class FxProcessor : BaseAudioProcessor() {
                 }
             }
 
-            // ---- 3. стереобаза ----
-            if (stereo && abs(w - 1f) >= 0.01f) {
-                val mid = (frame[0] + frame[1]) * 0.5f
-                val side = (frame[0] - frame[1]) * 0.5f * w
-                frame[0] = mid + side
-                frame[1] = mid - side
+            // ---- 3. моно / стереобаза / баланс Л-П ----
+            if (stereo) {
+                if (isMono) {
+                    val mVal = (frame[0] + frame[1]) * 0.5f
+                    frame[0] = mVal
+                    frame[1] = mVal
+                } else if (abs(w - 1f) >= 0.01f) {
+                    val mid = (frame[0] + frame[1]) * 0.5f
+                    val side = (frame[0] - frame[1]) * 0.5f * w
+                    frame[0] = mid + side
+                    frame[1] = mid - side
+                }
+                if (abs(bal) >= 0.01f) {
+                    frame[0] *= balL
+                    frame[1] *= balR
+                }
             }
 
-            var mono = 0f
-            for (c in 0 until ch) {
-                val v = softClip(frame[c] * g)
-                mono += v
-                out.putShort((v * 32767f).toInt().toShort())
+            // ---- 4. мягкая автонормализация громкости (AIMP Auto-Level) ----
+            var normGain = 1f
+            if (isNorm) {
+                var energy = 0f
+                for (c in 0 until ch) energy += abs(frame[c])
+                energy /= ch
+                rmsEnv += normAlpha * (energy - rmsEnv)
+                normGain = (0.22f / rmsEnv.coerceAtLeast(0.03f)).coerceIn(0.65f, 2.2f)
             }
-            tap(mono / ch)
+
+            var monoSum = 0f
+            val totalGain = g * normGain
+            for (c in 0 until ch) {
+                val v = softClip(frame[c] * totalGain)
+                monoSum += v
+                if (outFl) out.putFloat(v) else out.putShort((v * 32767f).toInt().toShort())
+            }
+            tap(monoSum / ch)
 
             pos++
             if (pos >= delayLen) pos = 0
@@ -347,8 +416,6 @@ class FxProcessor : BaseAudioProcessor() {
             lfo += lfoInc
             if (lfo > 2 * PI) lfo -= 2 * PI
         }
-        // хвост (неполный кадр) просто копируем
-        while (inputBuffer.hasRemaining()) out.put(inputBuffer.get())
         out.flip()
         lastWriteNs = System.nanoTime()
     }

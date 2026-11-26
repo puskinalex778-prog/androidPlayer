@@ -22,14 +22,43 @@ class Prefs(context: Context) {
 
     // ---- оформление ----
     var theme: String get() = str("theme", "COBALT"); set(v) = put("theme", v)
+    var activeCustomThemeId: String get() = str("customThemeId", ""); set(v) = put("customThemeId", v)
     var uiStyle: String get() = str("uiStyle", "FLAT"); set(v) = put("uiStyle", v)
     var visualizer: String get() = str("visualizer", "BARS"); set(v) = put("visualizer", v)
-    var darkMode: Int get() = sp.getInt("dark", 0); set(v) = put("dark", v) // 0 система, 1 тёмная, 2 светлая
-    var adaptiveColor: Boolean get() = sp.getBoolean("adaptive", true); set(v) = put("adaptive", v)
+    var darkMode: Int get() = sp.getInt("dark", 0); set(v) = put("dark", v)
+    // По умолчанию выключено, чтобы выбранная пользователем цветовая схема всегда применялась мгновенно!
+    var adaptiveColor: Boolean get() = sp.getBoolean("adaptive_v2", false); set(v) = put("adaptive_v2", v)
     var playerStage: Int get() = sp.getInt("stage", if (sp.getBoolean("cassette", true)) 0 else 1); set(v) = put("stage", v)
     var amoled: Boolean get() = sp.getBoolean("amoled", false); set(v) = put("amoled", v)
 
-    // ---- звук ----
+    var customThemes: List<CustomTheme>
+        get() = try {
+            val arr = JSONArray(str("customThemes", "[]"))
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                CustomTheme(
+                    id = o.getString("id"),
+                    name = o.getString("n"),
+                    accentArgb = o.getInt("a"),
+                    secondaryArgb = o.getInt("s"),
+                    bgArgb = o.getInt("b"),
+                    isDark = o.optBoolean("d", true),
+                )
+            }
+        } catch (_: Exception) { emptyList() }
+        set(list) {
+            val arr = JSONArray()
+            list.forEach { t ->
+                arr.put(JSONObject().apply {
+                    put("id", t.id); put("n", t.name)
+                    put("a", t.accentArgb); put("s", t.secondaryArgb)
+                    put("b", t.bgArgb); put("d", t.isDark)
+                })
+            }
+            put("customThemes", arr.toString())
+        }
+
+    // ---- звук и вывод ----
     var voice: String get() = str("voice", "NORMAL"); set(v) = put("voice", v)
     var pitchSemis: Float get() = sp.getFloat("pitchSemis", 0f); set(v) = put("pitchSemis", v)
     var speed: Float get() = sp.getFloat("speed", 1f); set(v) = put("speed", v)
@@ -39,6 +68,13 @@ class Prefs(context: Context) {
     var bass: Float get() = sp.getFloat("bass", 0f); set(v) = put("bass", v)
     var width: Float get() = sp.getFloat("width", 1f); set(v) = put("width", v)
     var preamp: Float get() = sp.getFloat("preamp", 0f); set(v) = put("preamp", v)
+    var balance: Float get() = sp.getFloat("balance", 0f); set(v) = put("balance", v)
+    var mono: Boolean get() = sp.getBoolean("mono", false); set(v) = put("mono", v)
+    var normalize: Boolean get() = sp.getBoolean("normalize", false); set(v) = put("normalize", v)
+    var smoothFade: Boolean get() = sp.getBoolean("smoothFade", true); set(v) = put("smoothFade", v)
+    var outputMode: Int get() = sp.getInt("outputMode", 0); set(v) = put("outputMode", v)
+    var forceSpeakerCallMode: Boolean get() = sp.getBoolean("forceSpeakerCall", false); set(v) = put("forceSpeakerCall", v)
+    var audioQuality: Int get() = sp.getInt("audioQuality", 0); set(v) = put("audioQuality", v)
 
     // ---- радио ----
     var quality: Int get() = sp.getInt("quality", 1); set(v) = put("quality", v)
@@ -94,4 +130,7 @@ class Prefs(context: Context) {
     var sort: Int get() = sp.getInt("sort", 0); set(v) = put("sort", v)
     var lastUri: String get() = str("lastUri", ""); set(v) = put("lastUri", v)
     var lastPos: Long get() = sp.getLong("lastPos", 0L); set(v) = put("lastPos", v)
+    var favoriteTracks: Set<String>
+        get() = sp.getStringSet("favTracks", emptySet()) ?: emptySet()
+        set(v) { sp.edit().putStringSet("favTracks", v).apply() }
 }

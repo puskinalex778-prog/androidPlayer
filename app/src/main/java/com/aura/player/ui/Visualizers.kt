@@ -18,6 +18,7 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.lerp
 import com.aura.player.playback.AudioEngine
 import kotlin.math.PI
 import kotlin.math.cos
@@ -30,6 +31,8 @@ import kotlin.math.sin
 
 enum class VisualizerType(val title: String) {
     BARS("Спектр"),
+    PIXELS("Пиксели"),
+    LEDS_62("62 LED"),
     WAVE("Волна"),
     RADIAL("Кольцо"),
     LED_VU("LED-дека"),
@@ -52,10 +55,16 @@ private class FrequencyAnalyzer(val bands: Int) {
 
     val levels = FloatArray(bands)
     val peaks = FloatArray(bands)
+    val sparkY = FloatArray(bands) // плавающие пиксельные искры
+    val sparkV = FloatArray(bands)
     val wave = FloatArray(96)
+    val leds62 = FloatArray(62)
+    val ledPeaks62 = FloatArray(62)
     var bass = 0f
     var mid = 0f
     var high = 0f
+    var energy = 0f
+    var peakEnergy = 0f
     var phase = 0f
 
     private val edges = IntArray(bands + 1) { i ->
@@ -68,7 +77,6 @@ private class FrequencyAnalyzer(val bands: Int) {
     fun update(active: Boolean) {
         if (active) {
             AudioEngine.fx.snapshot(buf)
-            // прореженная осциллограмма
             val step = n / wave.size
             for (i in wave.indices) {
                 wave[i] = wave[i] * 0.45f + buf[i * step] * 0.55f
@@ -96,13 +104,23 @@ private class FrequencyAnalyzer(val bands: Int) {
                 var peak = 0f
                 for (k in a until e) peak = max(peak, hypot(re[k], im[k]))
                 val db = 20f * ln(peak + 1e-6f) / ln(10f)
-                // лёгкая компенсация высоких частот, чтобы верхний спектр тоже «жил»
                 val tilt = (b.toFloat() / bands) * 7f
                 target = ((db + 11f + tilt) / 44f).coerceIn(0f, 1f)
             }
             val cur = if (target > levels[b]) levels[b] * 0.35f + target * 0.65f else levels[b] * 0.85f + target * 0.15f
             levels[b] = cur
             peaks[b] = if (cur >= peaks[b]) cur else (peaks[b] - 0.014f).coerceAtLeast(0f)
+
+            // физика пиксельных искр
+            if (cur > sparkY[b] + 0.04f) {
+                sparkY[b] = cur
+                sparkV[b] = 0.018f + (cur - sparkY[b]).coerceAtLeast(0f) * 0.05f
+            } else {
+                sparkY[b] += sparkV[b]
+                sparkV[b] -= 0.0022f
+                if (sparkY[b] < cur) { sparkY[b] = cur; sparkV[b] = 0f }
+                if (sparkY[b] > 1f) { sparkY[b] = 1f; sparkV[b] = -0.008f }
+            }
 
             when {
                 b < bEnd -> bSum += cur
@@ -113,6 +131,21 @@ private class FrequencyAnalyzer(val bands: Int) {
         bass = bSum / bEnd
         mid = mSum / (mEnd - bEnd)
         high = hSum / max(1, bands - mEnd)
+        energy = (bass * 0.5f + mid * 0.35f + high * 0.15f).coerceIn(0f, 1f)
+        peakEnergy = if (energy >= peakEnergy) energy else (peakEnergy - 0.012f).coerceAtLeast(0f)
+
+        // обновляем 62 индивидуальных светодиода (симметрично по 31 на канал/полукольцо + частотный отклик)
+        for (i in 0 until 62) {
+            val halfIdx = if (i < 31) i else (61 - i)
+            val normPos = halfIdx / 30f
+            val bandIdx = ((normPos) * (bands - 1)).toInt().coerceIn(0, bands - 1)
+            val beatLit = if (normPos <= energy * 1.15f) 1f else 0f
+            val freqLit = levels[bandIdx]
+            val target = max(beatLit * 0.92f, freqLit * 1.05f).coerceIn(0f, 1f)
+            leds62[i] = if (target > leds62[i]) leds62[i] * 0.3f + target * 0.7f else leds62[i] * 0.80f + target * 0.20f
+            ledPeaks62[i] = if (leds62[i] >= ledPeaks62[i]) leds62[i] else (ledPeaks62[i] - 0.02f).coerceAtLeast(0f)
+        }
+
         phase += 0.025f + bass * 0.07f
     }
 
@@ -154,9 +187,6 @@ private class FrequencyAnalyzer(val bands: Int) {
     }
 }
 
-/**
- * Универсальный визуализатор: работает и в компактной полосе, и на большой сцене плеера.
- */
 @Composable
 fun AudioVisualizer(
     type: VisualizerType,
@@ -176,7 +206,7 @@ fun AudioVisualizer(
             val fresh = System.nanoTime() - AudioEngine.fx.lastWriteNs < 420_000_000L
             analyzer.update(playing && fresh)
             onBeat(analyzer.bass)
-            if (!playing && analyzer.levels.all { it < 0.01f } && analyzer.peaks.all { it < 0.01f }) break
+            if (!playing && analyzer.levels.all { it < 0.01f } && analyzer.peaks.all { it < 0.01f } && analyzer.leds62.all { it < 0.01f }) break
         }
     }
 
@@ -184,6 +214,8 @@ fun AudioVisualizer(
         tick
         when (type) {
             VisualizerType.BARS -> drawBarsWithPeaks(analyzer, c.accent, c.accent2, c.text, large)
+            VisualizerType.PIXELS -> drawPixels(analyzer, c.accent, c.accent2, c.surface2, c.text, large)
+            VisualizerType.LEDS_62 -> draw62Leds(analyzer, c.accent, c.accent2, c.surface2, c.border, large)
             VisualizerType.WAVE -> drawFrequencyWave(analyzer, c.accent, c.accent2, large)
             VisualizerType.RADIAL -> drawRadialRing(analyzer, c.accent, c.accent2, c.border, large)
             VisualizerType.LED_VU -> drawLedMatrix(analyzer, c.surface2, large)
@@ -193,7 +225,7 @@ fun AudioVisualizer(
     }
 }
 
-// 1. Спектр с пиковыми индикаторами
+// 1. Спектр с пиками
 private fun DrawScope.drawBarsWithPeaks(a: FrequencyAnalyzer, accent: Color, accent2: Color, text: Color, large: Boolean) {
     val count = a.bands
     val gap = size.width / count
@@ -216,13 +248,152 @@ private fun DrawScope.drawBarsWithPeaks(a: FrequencyAnalyzer, accent: Color, acc
     }
 }
 
-// 2. Плавная частотная волна + осциллограмма
+// 2. ПИКСЕЛИ — ретро пиксельная мозаика с подпрыгивающими пикселями-искрами
+private fun DrawScope.drawPixels(a: FrequencyAnalyzer, accent: Color, accent2: Color, offBg: Color, peakCol: Color, large: Boolean) {
+    val cols = if (large) 24 else 28
+    val cell = size.width / cols
+    val rows = max(4, (size.height / cell).toInt())
+    val gap = (cell * 0.18f).coerceAtLeast(1.5f)
+    val pxSize = (cell - gap).coerceAtLeast(2f)
+    val yOffset = size.height - rows * cell
+
+    for (col in 0 until cols) {
+        val bIdx = (col * a.bands / cols).coerceIn(0, a.bands - 1)
+        val lvl = a.levels[bIdx]
+        val litRows = (lvl * rows).toInt().coerceIn(0, rows)
+        val sparkRow = (a.sparkY[bIdx] * (rows - 1)).toInt().coerceIn(0, rows - 1)
+
+        for (r in 0 until rows) {
+            val x = col * cell + gap * 0.5f
+            val y = yOffset + (rows - 1 - r) * cell + gap * 0.5f
+            val frac = r.toFloat() / max(1, rows - 1)
+            val isLit = r < litRows
+            val isSpark = a.sparkY[bIdx] > 0.08f && r == sparkRow
+
+            val color = when {
+                isSpark -> peakCol
+                isLit -> when {
+                    frac > 0.80f -> Color(0xFFF43F5E)
+                    frac > 0.55f -> lerp(accent2, Color(0xFFFACC15), (frac - 0.55f) / 0.25f)
+                    else -> lerp(accent, accent2, frac / 0.55f)
+                }
+                else -> offBg.copy(alpha = 0.42f)
+            }
+            // Строгие квадратные пиксели без скругления!
+            drawRect(color, Offset(x, y), Size(pxSize, pxSize))
+        }
+    }
+}
+
+// 3. 62 СВЕТОДИОДА — ровно 62 физических диода, загорающихся в такт музыки
+private fun DrawScope.draw62Leds(a: FrequencyAnalyzer, accent: Color, accent2: Color, socketBg: Color, border: Color, large: Boolean) {
+    val total = 62
+    val emerald = Color(0xFF10B981)
+    val cyan = Color(0xFF06B6D4)
+    val amber = Color(0xFFF59E0B)
+    val hotRed = Color(0xFFEF4444)
+
+    fun ledColorFor(pos01: Float): Color = when {
+        pos01 >= 0.84f -> hotRed
+        pos01 >= 0.64f -> amber
+        pos01 >= 0.34f -> lerp(cyan, accent, (pos01 - 0.34f) / 0.30f)
+        else -> lerp(emerald, cyan, pos01 / 0.34f)
+    }
+
+    if (large) {
+        // Большая сцена: прецизионное 360° кольцо из РОВНО 62 круглых светодиодов (31 левая дуга + 31 правая дуга)
+        val cx = size.width * 0.5f
+        val cy = size.height * 0.5f
+        val minDim = min(size.width, size.height)
+        val ringR = minDim * 0.40f
+        val ledR = (2 * PI * ringR / total * 0.36).toFloat().coerceIn(2.6f, 6.5f)
+
+        // декоративный контур платы и центральное ядро, реагирующее на бас
+        drawCircle(border.copy(alpha = 0.45f), ringR, Offset(cx, cy), style = Stroke(ledR * 2.3f))
+        drawCircle(accent.copy(alpha = 0.12f + a.bass * 0.22f), ringR * (0.46f + a.bass * 0.12f), Offset(cx, cy))
+        drawCircle(accent.copy(alpha = 0.65f), ringR * (0.46f + a.bass * 0.12f), Offset(cx, cy), style = Stroke(2.2f))
+
+        // Внутренняя пульсирующая корона (низкие / средние / высокие)
+        drawCircle(accent2.copy(alpha = 0.45f), ringR * (0.28f + a.mid * 0.16f), Offset(cx, cy), style = Stroke(2f))
+        drawCircle(emerald.copy(alpha = 0.55f), ringR * (0.12f + a.high * 0.14f), Offset(cx, cy))
+
+        for (i in 0 until total) {
+            // Располагаем 62 диода равномерно по кругу, начиная снизу (90°)
+            val halfIdx = if (i < 31) i else (61 - i)
+            val pos01 = halfIdx / 30f
+            val angle = if (i < 31) {
+                (PI / 2.0) + (halfIdx + 0.5) / 31.0 * PI
+            } else {
+                (PI / 2.0) - (halfIdx + 0.5) / 31.0 * PI
+            }
+            val lx = cx + (cos(angle) * ringR).toFloat()
+            val ly = cy + (sin(angle) * ringR).toFloat()
+            val center = Offset(lx, ly)
+
+            val intensity = a.leds62[i]
+            val isLit = intensity > 0.22f
+            val col = ledColorFor(pos01)
+
+            // корпус неактивного диода
+            drawCircle(socketBg, ledR, center)
+            if (isLit) {
+                val glowAlpha = (intensity * 0.45f).coerceIn(0.15f, 0.55f)
+                drawCircle(col.copy(alpha = glowAlpha), ledR * 2.15f, center)
+                drawCircle(col, ledR * 0.96f, center)
+                drawCircle(Color.White.copy(alpha = 0.72f * intensity), ledR * 0.36f, center)
+            } else {
+                drawCircle(col.copy(alpha = 0.12f), ledR * 0.75f, center)
+            }
+        }
+    } else {
+        // Компактная полоса: РОВНО 62 светодиода в 2 аккуратных ряда по 31 диоду (31 × 2 = 62)
+        val perRow = 31
+        val stepX = size.width / perRow
+        val ledR = min(stepX * 0.34f, size.height * 0.17f).coerceAtLeast(1.8f)
+        val yTop = size.height * 0.30f
+        val yBot = size.height * 0.72f
+
+        val litTop = (a.energy * perRow * 1.12f).toInt().coerceIn(0, perRow)
+        val peakTop = (a.peakEnergy * (perRow - 1)).toInt().coerceIn(0, perRow - 1)
+
+        for (i in 0 until perRow) {
+            val pos01 = i / 30f
+            val x = (i + 0.5f) * stepX
+            val col = ledColorFor(pos01)
+
+            // Верхний ряд (31 LED): уровень в такт баса и общей громкости + пиковый диод
+            val topOn = i < litTop || (a.peakEnergy > 0.08f && i == peakTop)
+            drawCircle(socketBg, ledR, Offset(x, yTop))
+            if (topOn) {
+                drawCircle(col.copy(alpha = 0.35f), ledR * 1.85f, Offset(x, yTop))
+                drawCircle(col, ledR, Offset(x, yTop))
+                drawCircle(Color.White.copy(alpha = 0.65f), ledR * 0.35f, Offset(x, yTop))
+            } else {
+                drawCircle(col.copy(alpha = 0.10f), ledR * 0.75f, Offset(x, yTop))
+            }
+
+            // Нижний ряд (31 LED): частотный отклик по 31 полосе (итого 31 + 31 = 62 LED!)
+            val bIdx = (i * a.bands / perRow).coerceIn(0, a.bands - 1)
+            val botLvl = a.levels[bIdx]
+            val botOn = botLvl > 0.24f
+            drawCircle(socketBg, ledR, Offset(x, yBot))
+            if (botOn) {
+                drawCircle(col.copy(alpha = 0.32f * botLvl), ledR * 1.8f, Offset(x, yBot))
+                drawCircle(col.copy(alpha = (0.45f + botLvl * 0.55f).coerceIn(0f, 1f)), ledR, Offset(x, yBot))
+                drawCircle(Color.White.copy(alpha = 0.55f * botLvl), ledR * 0.32f, Offset(x, yBot))
+            } else {
+                drawCircle(col.copy(alpha = 0.10f), ledR * 0.75f, Offset(x, yBot))
+            }
+        }
+    }
+}
+
+// 4. Волна + осциллограмма
 private fun DrawScope.drawFrequencyWave(a: FrequencyAnalyzer, accent: Color, accent2: Color, large: Boolean) {
     val cy = size.height * 0.5f
     val n = a.bands
     val dx = size.width / max(1, n - 1)
 
-    // верхняя частотная огибающая
     val topPath = Path()
     val fillPath = Path()
     for (i in 0 until n) {
@@ -251,7 +422,6 @@ private fun DrawScope.drawFrequencyWave(a: FrequencyAnalyzer, accent: Color, acc
     drawPath(fillPath, Brush.verticalGradient(listOf(accent.copy(alpha = 0.35f), accent2.copy(alpha = 0.08f))))
     drawPath(topPath, accent, style = Stroke(width = if (large) 3.5f else 2.2f, cap = StrokeCap.Round))
 
-    // живая осциллограмма по центру
     val wavePath = Path()
     val wDx = size.width / max(1, a.wave.size - 1)
     for (i in a.wave.indices) {
@@ -262,30 +432,26 @@ private fun DrawScope.drawFrequencyWave(a: FrequencyAnalyzer, accent: Color, acc
     drawPath(wavePath, accent2.copy(alpha = 0.9f), style = Stroke(width = if (large) 2.2f else 1.5f, cap = StrokeCap.Round))
 }
 
-// 3. Кольцо 360° (в компактном режиме рисует два кольца или широкую дугу)
+// 5. Кольцо 360°
 private fun DrawScope.drawRadialRing(a: FrequencyAnalyzer, accent: Color, accent2: Color, border: Color, large: Boolean) {
     val cx = size.width * 0.5f
     val cy = size.height * 0.5f
     val minDim = min(size.width, size.height)
     if (!large && size.height < size.width * 0.35f) {
-        // в узкой полосе — симметричный частотный пульс из центра
         val half = a.bands / 2
         val gap = (size.width * 0.5f) / max(1, half)
         val bw = (gap * 0.55f).coerceAtLeast(2f)
         for (i in 0 until half) {
             val v = a.levels[i].coerceAtLeast(0.06f)
             val h = v * size.height * 0.9f
-            val xR = cx + i * gap
-            val xL = cx - (i + 1) * gap
-            drawRoundRect(accent, Offset(xR, cy - h / 2), Size(bw, h), CornerRadius(bw))
-            drawRoundRect(accent2, Offset(xL, cy - h / 2), Size(bw, h), CornerRadius(bw))
+            drawRoundRect(accent, Offset(cx + i * gap, cy - h / 2), Size(bw, h), CornerRadius(bw))
+            drawRoundRect(accent2, Offset(cx - (i + 1) * gap, cy - h / 2), Size(bw, h), CornerRadius(bw))
         }
         return
     }
     val baseR = minDim * (0.24f + a.bass * 0.06f)
     val maxBar = minDim * 0.22f
 
-    // пульсирующее басовое ядро
     drawCircle(accent.copy(alpha = 0.14f + a.bass * 0.2f), baseR * (1f + a.bass * 0.25f), Offset(cx, cy))
     drawCircle(border, baseR, Offset(cx, cy), style = Stroke(2f))
     drawCircle(accent, baseR * (0.45f + a.mid * 0.25f), Offset(cx, cy), style = Stroke(3f))
@@ -295,16 +461,18 @@ private fun DrawScope.drawRadialRing(a: FrequencyAnalyzer, accent: Color, accent
     for (i in 0 until count) {
         val ang = (i.toFloat() / count) * 2f * PI.toFloat() - (PI / 2f).toFloat() + a.phase * 0.12f
         val len = (0.06f + a.levels[i]) * maxBar
-        val ca = cos(ang)
-        val sa = sin(ang)
-        val p1 = Offset(cx + ca * (baseR + 4f), cy + sa * (baseR + 4f))
-        val p2 = Offset(cx + ca * (baseR + 4f + len), cy + sa * (baseR + 4f + len))
-        val col = if (i < count / 3) accent else accent2
-        drawLine(col, p1, p2, strokeWidth = strokeW, cap = StrokeCap.Round)
+        val ca = cos(ang); val sa = sin(ang)
+        drawLine(
+            if (i < count / 3) accent else accent2,
+            Offset(cx + ca * (baseR + 4f), cy + sa * (baseR + 4f)),
+            Offset(cx + ca * (baseR + 4f + len), cy + sa * (baseR + 4f + len)),
+            strokeWidth = strokeW,
+            cap = StrokeCap.Round,
+        )
     }
 }
 
-// 4. Hi-Fi LED-матрица (зелёный -> янтарный -> красный)
+// 6. Hi-Fi LED-матрица
 private fun DrawScope.drawLedMatrix(a: FrequencyAnalyzer, trackBg: Color, large: Boolean) {
     val cols = if (large) 20 else 24
     val rows = if (large) 14 else 6
@@ -346,13 +514,12 @@ private fun DrawScope.drawLedMatrix(a: FrequencyAnalyzer, trackBg: Color, large:
     }
 }
 
-// 5. Частотные частицы и басовые волны
+// 7. Энергия (частицы)
 private fun DrawScope.drawEnergyParticles(a: FrequencyAnalyzer, accent: Color, accent2: Color, large: Boolean) {
     val cx = size.width * 0.5f
     val cy = size.height * 0.5f
     val minDim = min(size.width, size.height)
 
-    // басовые кольца
     if (large) {
         for (k in 0..2) {
             val prog = ((a.phase * 0.35f + k * 0.33f) % 1f)
@@ -369,16 +536,12 @@ private fun DrawScope.drawEnergyParticles(a: FrequencyAnalyzer, accent: Color, a
             val ang = i * 2.39996f + a.phase * (0.25f + (i % 3) * 0.12f)
             val dist = minDim * (0.10f + (i.toFloat() / count) * 0.36f) * (0.85f + e * 0.45f)
             cx + cos(ang) * dist
-        } else {
-            (i + 0.5f) * (size.width / count)
-        }
+        } else (i + 0.5f) * (size.width / count)
         val y = if (large) {
             val ang = i * 2.39996f + a.phase * (0.25f + (i % 3) * 0.12f)
             val dist = minDim * (0.10f + (i.toFloat() / count) * 0.36f) * (0.85f + e * 0.45f)
             cy + sin(ang) * dist
-        } else {
-            cy + sin(a.phase * 1.4f + i * 0.55f) * (size.height * 0.32f) * (0.3f + e)
-        }
+        } else cy + sin(a.phase * 1.4f + i * 0.55f) * (size.height * 0.32f) * (0.3f + e)
         val radius = (if (large) 4f + e * 18f else 2.5f + e * 8f)
         val col = if (i % 2 == 0) accent else accent2
         drawCircle(col.copy(alpha = 0.25f + e * 0.45f), radius * 1.55f, Offset(x, y))
@@ -386,13 +549,12 @@ private fun DrawScope.drawEnergyParticles(a: FrequencyAnalyzer, accent: Color, a
     }
 }
 
-// 6. Зеркальный горизонт
+// 8. Горизонт
 private fun DrawScope.drawMirrorSkyline(a: FrequencyAnalyzer, accent: Color, accent2: Color, border: Color) {
     val cy = size.height * 0.55f
     val count = a.bands
     val gap = size.width / count
     val bw = (gap * 0.62f).coerceAtLeast(2f)
-
     drawLine(border, Offset(0f, cy), Offset(size.width, cy), 1.5f)
 
     for (i in 0 until count) {
