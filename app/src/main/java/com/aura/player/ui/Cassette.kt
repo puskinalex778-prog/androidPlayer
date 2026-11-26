@@ -68,8 +68,10 @@ fun Cassette(
                     val dt = (now - last) / 1_000_000_000f
                     val rl = 0.45f + 0.55f * (1f - p)
                     val rr = 0.45f + 0.55f * p
-                    angleL = (angleL + dt * 155f / rl) % 360f
-                    angleR = (angleR + dt * 155f / rr) % 360f
+                    // Настоящая кассета (сторона A, плёнка идёт слева направо по нижнему краю):
+                    // обе катушки вращаются против часовой стрелки
+                    angleL = (angleL - dt * 155f / rl + 360f) % 360f
+                    angleR = (angleR - dt * 155f / rr + 360f) % 360f
                 }
                 last = now
             }

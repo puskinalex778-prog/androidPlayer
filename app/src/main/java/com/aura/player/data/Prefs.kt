@@ -22,9 +22,11 @@ class Prefs(context: Context) {
 
     // ---- оформление ----
     var theme: String get() = str("theme", "COBALT"); set(v) = put("theme", v)
-    var darkMode: Int get() = sp.getInt("dark", 0); set(v) = put("dark", v) // 0 системная, 1 тёмная, 2 светлая
+    var uiStyle: String get() = str("uiStyle", "FLAT"); set(v) = put("uiStyle", v)
+    var visualizer: String get() = str("visualizer", "BARS"); set(v) = put("visualizer", v)
+    var darkMode: Int get() = sp.getInt("dark", 0); set(v) = put("dark", v) // 0 система, 1 тёмная, 2 светлая
     var adaptiveColor: Boolean get() = sp.getBoolean("adaptive", true); set(v) = put("adaptive", v)
-    var cassetteView: Boolean get() = sp.getBoolean("cassette", true); set(v) = put("cassette", v)
+    var playerStage: Int get() = sp.getInt("stage", if (sp.getBoolean("cassette", true)) 0 else 1); set(v) = put("stage", v)
     var amoled: Boolean get() = sp.getBoolean("amoled", false); set(v) = put("amoled", v)
 
     // ---- звук ----
@@ -44,7 +46,6 @@ class Prefs(context: Context) {
         get() = sp.getStringSet("favs", emptySet()) ?: emptySet()
         set(v) { sp.edit().putStringSet("favs", v).apply() }
     var lastCountry: String get() = str("country", "RU"); set(v) = put("country", v)
-    /** выбранный пользователем битрейт для станции */
     fun stationBitrate(id: String): Int = sp.getInt("br_$id", -1)
     fun setStationBitrate(id: String, br: Int) = put("br_$id", br)
 
@@ -68,7 +69,6 @@ class Prefs(context: Context) {
             put("custom", arr.toString())
         }
 
-    /** станции из онлайн-каталога, добавленные в избранное (их нет во встроенном списке) */
     var savedOnline: List<Station>
         get() = try {
             val arr = JSONArray(str("savedOnline", "[]"))
@@ -76,7 +76,7 @@ class Prefs(context: Context) {
                 val o = arr.getJSONObject(i)
                 val sa = o.getJSONArray("s")
                 Station(o.getString("id"), o.getString("name"), o.optString("country"), o.optString("genre"),
-                    (0 until sa.length()).map { j -> val so = sa.getJSONObject(j); StreamOption(so.optInt("b"), so.getString("u"), so.optString("c")) })
+                    (0 until sa.length()).map { j -> val so = sa.getJSONObject(j); StreamOption(so.optInt("b"), so.optString("u"), so.optString("c")) })
             }
         } catch (_: Exception) { emptyList() }
         set(list) {
@@ -94,7 +94,4 @@ class Prefs(context: Context) {
     var sort: Int get() = sp.getInt("sort", 0); set(v) = put("sort", v)
     var lastUri: String get() = str("lastUri", ""); set(v) = put("lastUri", v)
     var lastPos: Long get() = sp.getLong("lastPos", 0L); set(v) = put("lastPos", v)
-    var hiddenUris: Set<String>
-        get() = sp.getStringSet("hidden", emptySet()) ?: emptySet()
-        set(v) { sp.edit().putStringSet("hidden", v).apply() }
 }

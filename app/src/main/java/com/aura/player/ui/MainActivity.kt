@@ -44,6 +44,7 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bedtime
@@ -101,28 +102,32 @@ class MainActivity : ComponentActivity() {
     private val vm: MainViewModel by viewModels()
     private var controllerFuture: ListenableFuture<MediaController>? = null
     private var openPickerAfterPerm = mutableStateOf(false)
+    private var pendingPlaylistId: String? = null
 
     private val audioPermission: String
         get() = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
 
     private val notifPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { }
 
-    // Разрешение на чтение аудио запрашивается ТОЛЬКО если пользователь сам открыл «Выбрать папки с устройства»
     private val pickerPermLauncher = registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted || checkAudioPerm()) {
             vm.loadDeviceFolders()
             openPickerAfterPerm.value = true
         } else {
-            vm.toast.value = "Нет доступа к памяти. Используйте «Добавить файлы» или «Добавить папку»."
+            vm.toast.value = "Нет доступа к памяти. Используйте «Добавить файлы» или «Папка / SD»."
         }
     }
 
     private val pickFiles = registerForActivityResult(ActivityResultContracts.OpenMultipleDocuments()) { uris ->
-        vm.addFiles(uris)
+        val pl = pendingPlaylistId
+        pendingPlaylistId = null
+        vm.addFiles(uris, targetPlaylistId = pl)
     }
 
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
-        if (uri != null) vm.addFolder(uri)
+        val pl = pendingPlaylistId
+        pendingPlaylistId = null
+        if (uri != null) vm.openSafTree(uri, targetPlaylistId = pl)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -133,7 +138,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         AudioEngine.init(this)
 
-        // Запрашиваем только уведомления (для управления фоновым воспроизведением), память сами не сканируем!
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {
@@ -147,7 +151,7 @@ class MainActivity : ComponentActivity() {
             val accentInt by AudioEngine.accent.collectAsState()
             val adaptive = if (settings.adaptive && settings.theme != AuraTheme.MONO) accentInt?.let { Color(it) } else null
 
-            AuraAppTheme(settings.theme, settings.darkMode, settings.amoled, adaptive) { dark ->
+            AuraAppTheme(settings.theme, settings.style, settings.darkMode, settings.amoled, adaptive) { dark ->
                 val view = LocalView.current
                 SideEffect {
                     val controller = WindowCompat.getInsetsController(window, view)
@@ -159,12 +163,17 @@ class MainActivity : ComponentActivity() {
                     vm = vm,
                     showPickerSignal = openPickerAfterPerm.value,
                     onConsumePickerSignal = { openPickerAfterPerm.value = false },
-                    onAddFiles = {
+                    onAddFiles = { plId ->
+                        pendingPlaylistId = plId
                         runCatching {
-                            pickFiles.launch(arrayOf("audio/*", "application/ogg", "application/x-flac", "application/octet-stream", "video/mp4"))
+                            // Без video/mp4; m4a/mp4 дополнительно отфильтруются в Library.isAllowedUri
+                            pickFiles.launch(arrayOf("audio/*"))
                         }
                     },
-                    onAddFolder = { runCatching { pickFolder.launch(null) } },
+                    onAddFolder = { plId ->
+                        pendingPlaylistId = plId
+                        runCatching { pickFolder.launch(null) }
+                    },
                     onRequestDevicePicker = {
                         if (checkAudioPerm()) {
                             vm.loadDeviceFolders()
@@ -220,18 +229,18 @@ private fun AppRoot(
     vm: MainViewModel,
     showPickerSignal: Boolean,
     onConsumePickerSignal: () -> Unit,
-    onAddFiles: () -> Unit,
-    onAddFolder: () -> Unit,
+    onAddFiles: (playlistId: String?) -> Unit,
+    onAddFolder: (playlistId: String?) -> Unit,
     onRequestDevicePicker: () -> Unit,
 ) {
-    val c = LocalAura.current
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(DrawerValue.Closed)
 
     var tab by rememberSaveable { mutableStateOf(Tab.LIBRARY) }
-    var soundSection by rememberSaveable { mutableIntStateOf(0) }     // 0 = Голос, 1 = Эквалайзер
-    var settingsSection by rememberSaveable { mutableIntStateOf(0) }  // 0 = Темы, 1 = Общие
+    var libTab by rememberSaveable { mutableStateOf(LibTab.TRACKS) }
+    var soundSection by rememberSaveable { mutableIntStateOf(0) }
+    var settingsSection by rememberSaveable { mutableIntStateOf(0) }
     var full by rememberSaveable { mutableStateOf(false) }
     var showPicker by remember { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
@@ -240,6 +249,8 @@ private fun AppRoot(
     val sound by AudioEngine.sound.collectAsState()
     val settings by vm.settings.collectAsState()
     val tracks by vm.tracks.collectAsState()
+    val playlists by vm.playlists.collectAsState()
+    val safState by vm.safBrowser.collectAsState()
     val sleepAt by AudioEngine.sleepAt.collectAsState()
     val error by AudioEngine.error.collectAsState()
     val toast by vm.toast.collectAsState()
@@ -265,35 +276,42 @@ private fun AppRoot(
         drawerContent = {
             FlatDrawerMenu(
                 tab = tab,
+                libTab = libTab,
                 soundSection = soundSection,
                 settingsSection = settingsSection,
                 trackCount = tracks.size,
+                playlistCount = playlists.size,
                 voiceLabel = if (sound.voice.ordinal != 0) sound.voice.title else null,
                 eqLabel = if (sound.eqOn && sound.preset != "Ровно") sound.preset else null,
-                themeLabel = settings.theme.title,
+                styleLabel = settings.style.title,
                 sleepActive = sleepAt > 0,
                 nowTitle = if (now.hasMedia) now.title else null,
-                onNavigate = { t, sub ->
+                onNavigate = { t, sub, lt ->
                     tab = t
+                    if (lt != null) libTab = lt
                     if (t == Tab.SOUND) soundSection = sub
                     if (t == Tab.SETTINGS) settingsSection = sub
                     closeMenu()
                 },
-                onAddFiles = { closeMenu(); onAddFiles() },
-                onAddFolder = { closeMenu(); onAddFolder() },
+                onAddFiles = { closeMenu(); onAddFiles(null) },
+                onAddFolder = { closeMenu(); onAddFolder(null) },
                 onDevicePicker = { closeMenu(); onRequestDevicePicker() },
                 onSleep = { closeMenu(); showSleep = true },
                 onOpenPlayer = { if (now.hasMedia) { closeMenu(); full = true } },
             )
         },
     ) {
-        Box(Modifier.fillMaxSize().background(c.bg)) {
+        Box(Modifier.fillMaxSize()) {
+            StyleBackdrop()
+
             val bottomSpace = if (now.hasMedia) 156 else 92
             Box(Modifier.fillMaxSize().statusBarsPadding()) {
                 AnimatedContent(tab, transitionSpec = { fadeIn(tween(180)) togetherWith fadeOut(tween(120)) }, label = "tab") { t ->
                     when (t) {
                         Tab.LIBRARY -> LibraryScreen(
                             vm = vm,
+                            tab = libTab,
+                            onTabChange = { libTab = it },
                             onMenu = openMenu,
                             onAddFiles = onAddFiles,
                             onAddFolder = onAddFolder,
@@ -302,6 +320,7 @@ private fun AppRoot(
                         )
                         Tab.RADIO -> RadioScreen(vm = vm, onMenu = openMenu, bottomPadding = bottomSpace)
                         Tab.SOUND -> SoundScreen(
+                            vm = vm,
                             section = soundSection,
                             onSectionChange = { soundSection = it },
                             onMenu = openMenu,
@@ -318,7 +337,7 @@ private fun AppRoot(
                 }
             }
 
-            // ---- нижняя плоская док-панель: мини-плеер + навигация ----
+            // ---- нижняя док-панель ----
             Column(Modifier.align(Alignment.BottomCenter).fillMaxWidth()) {
                 AnimatedVisibility(
                     now.hasMedia,
@@ -346,6 +365,9 @@ private fun AppRoot(
         }
     }
 
+    safState?.let { st ->
+        SafFolderBrowserSheet(vm = vm, state = st)
+    }
     if (showPicker) {
         DeviceFolderPickerSheet(vm = vm, onDismiss = { showPicker = false })
     }
@@ -354,20 +376,22 @@ private fun AppRoot(
     }
 }
 
-// ===================== Боковое Flat-меню =====================
+// ===================== Боковое меню =====================
 
 @Composable
 private fun FlatDrawerMenu(
     tab: Tab,
+    libTab: LibTab,
     soundSection: Int,
     settingsSection: Int,
     trackCount: Int,
+    playlistCount: Int,
     voiceLabel: String?,
     eqLabel: String?,
-    themeLabel: String,
+    styleLabel: String,
     sleepActive: Boolean,
     nowTitle: String?,
-    onNavigate: (Tab, Int) -> Unit,
+    onNavigate: (Tab, Int, LibTab?) -> Unit,
     onAddFiles: () -> Unit,
     onAddFolder: () -> Unit,
     onDevicePicker: () -> Unit,
@@ -378,7 +402,7 @@ private fun FlatDrawerMenu(
     ModalDrawerSheet(
         modifier = Modifier.width(296.dp).fillMaxHeight(),
         drawerShape = RectangleShape,
-        drawerContainerColor = c.surface,
+        drawerContainerColor = c.surfaceSolid,
         drawerTonalElevation = 0.dp,
     ) {
         Row(Modifier.fillMaxSize()) {
@@ -391,19 +415,18 @@ private fun FlatDrawerMenu(
                     .verticalScroll(rememberScrollState())
                     .padding(horizontal = 14.dp, vertical = 14.dp),
             ) {
-                // ---- заголовок меню ----
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(14.dp))
+                        .clip(RoundedCornerShape(c.cardRadius))
                         .background(c.surface2)
-                        .border(1.dp, c.border, RoundedCornerShape(14.dp))
+                        .border(c.borderWidth, c.border, RoundedCornerShape(c.cardRadius))
                         .clickable(enabled = nowTitle != null, onClick = onOpenPlayer)
                         .padding(12.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     Box(
-                        Modifier.size(42.dp).clip(RoundedCornerShape(11.dp)).background(c.accent),
+                        Modifier.size(42.dp).clip(RoundedCornerShape(c.controlRadius)).background(c.accent),
                         contentAlignment = Alignment.Center,
                     ) {
                         Icon(Icons.Rounded.Album, null, tint = c.onAccent, modifier = Modifier.size(24.dp))
@@ -411,7 +434,7 @@ private fun FlatDrawerMenu(
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                         Text("Aura Player", style = MaterialTheme.typography.titleMedium, color = c.text)
                         Text(
-                            nowTitle ?: "Flat Edition · 2026",
+                            nowTitle ?: "$styleLabel · 2026",
                             style = MaterialTheme.typography.bodySmall,
                             color = if (nowTitle != null) c.accent else c.textDim,
                             maxLines = 1,
@@ -427,42 +450,49 @@ private fun FlatDrawerMenu(
                     icon = Icons.Rounded.LibraryMusic,
                     title = "Моя музыка",
                     badge = trackCount.toString(),
-                    selected = tab == Tab.LIBRARY,
-                ) { onNavigate(Tab.LIBRARY, 0) }
+                    selected = tab == Tab.LIBRARY && libTab != LibTab.PLAYLISTS,
+                ) { onNavigate(Tab.LIBRARY, 0, LibTab.TRACKS) }
+
+                DrawerItem(
+                    icon = Icons.AutoMirrored.Rounded.QueueMusic,
+                    title = "Плейлисты",
+                    badge = playlistCount.toString(),
+                    selected = tab == Tab.LIBRARY && libTab == LibTab.PLAYLISTS,
+                ) { onNavigate(Tab.LIBRARY, 0, LibTab.PLAYLISTS) }
 
                 DrawerItem(
                     icon = Icons.Rounded.Radio,
                     title = "Онлайн-радио",
                     badge = "5 стран",
                     selected = tab == Tab.RADIO,
-                ) { onNavigate(Tab.RADIO, 0) }
+                ) { onNavigate(Tab.RADIO, 0, null) }
 
                 DrawerItem(
                     icon = Icons.Rounded.RecordVoiceOver,
                     title = "Эффекты голоса",
                     badge = voiceLabel,
                     selected = tab == Tab.SOUND && soundSection == 0,
-                ) { onNavigate(Tab.SOUND, 0) }
+                ) { onNavigate(Tab.SOUND, 0, null) }
 
                 DrawerItem(
                     icon = Icons.Rounded.Equalizer,
                     title = "Эквалайзер",
                     badge = eqLabel,
                     selected = tab == Tab.SOUND && soundSection == 1,
-                ) { onNavigate(Tab.SOUND, 1) }
+                ) { onNavigate(Tab.SOUND, 1, null) }
 
                 DrawerItem(
                     icon = Icons.Rounded.Palette,
-                    title = "Темы и вид",
-                    badge = themeLabel,
+                    title = "Темы и стили",
+                    badge = styleLabel,
                     selected = tab == Tab.SETTINGS && settingsSection == 0,
-                ) { onNavigate(Tab.SETTINGS, 0) }
+                ) { onNavigate(Tab.SETTINGS, 0, null) }
 
                 DrawerItem(
                     icon = Icons.Rounded.Tune,
                     title = "Настройки",
                     selected = tab == Tab.SETTINGS && settingsSection == 1,
-                ) { onNavigate(Tab.SETTINGS, 1) }
+                ) { onNavigate(Tab.SETTINGS, 1, null) }
 
                 Spacer(Modifier.height(10.dp))
                 HorizontalDivider(color = c.border)
@@ -470,8 +500,8 @@ private fun FlatDrawerMenu(
                 DrawerLabel("ДОБАВИТЬ МУЗЫКУ")
 
                 DrawerItem(icon = Icons.Rounded.Add, title = "Добавить файлы", selected = false, onClick = onAddFiles)
-                DrawerItem(icon = Icons.Rounded.CreateNewFolder, title = "Добавить папку (SD)", selected = false, onClick = onAddFolder)
-                DrawerItem(icon = Icons.Rounded.PhoneAndroid, title = "Выбрать папки с телефона", selected = false, onClick = onDevicePicker)
+                DrawerItem(icon = Icons.Rounded.CreateNewFolder, title = "Выбрать папку (SD)", selected = false, onClick = onAddFolder)
+                DrawerItem(icon = Icons.Rounded.PhoneAndroid, title = "Импорт папок с телефона", selected = false, onClick = onDevicePicker)
 
                 Spacer(Modifier.height(10.dp))
                 HorizontalDivider(color = c.border)
@@ -486,8 +516,7 @@ private fun FlatDrawerMenu(
                     onClick = onSleep,
                 )
             }
-            // правая плоская граница меню
-            Box(Modifier.width(1.dp).fillMaxHeight().background(c.border))
+            Box(Modifier.width(c.borderWidth).fillMaxHeight().background(c.border))
         }
     }
 }
@@ -511,7 +540,7 @@ private fun DrawerItem(
     onClick: () -> Unit,
 ) {
     val c = LocalAura.current
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(c.controlRadius)
     Row(
         Modifier
             .fillMaxWidth()
@@ -519,7 +548,7 @@ private fun DrawerItem(
             .clip(shape)
             .background(if (selected) c.accentSoft else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = 12.dp, vertical = 11.dp),
+            .padding(horizontal = 12.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(icon, null, tint = if (selected) c.accent else c.textDim, modifier = Modifier.size(20.dp))
@@ -539,7 +568,7 @@ private fun DrawerItem(
                 color = if (selected) c.accent else c.textDim,
                 modifier = Modifier
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (selected) c.surface else c.surface2)
+                    .background(if (selected) c.surfaceSolid else c.surface2)
                     .padding(horizontal = 7.dp, vertical = 2.dp),
                 maxLines = 1,
             )
@@ -547,13 +576,14 @@ private fun DrawerItem(
     }
 }
 
-// ===================== Нижняя Flat-навигация =====================
+// ===================== Нижняя навигация =====================
 
 @Composable
 private fun FlatBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
     val c = LocalAura.current
-    Column(Modifier.fillMaxWidth().background(c.surface)) {
-        HorizontalDivider(thickness = 1.dp, color = c.border)
+    val bg = if (c.style == UiStyle.GLASS) c.surfaceSolid.copy(alpha = 0.88f) else c.surface
+    Column(Modifier.fillMaxWidth().background(bg)) {
+        HorizontalDivider(thickness = c.borderWidth, color = c.border)
         Row(
             Modifier
                 .fillMaxWidth()
@@ -566,7 +596,7 @@ private fun FlatBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
                 Column(
                     Modifier
                         .weight(1f)
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(c.controlRadius))
                         .clickable { onSelect(t) }
                         .padding(vertical = 4.dp),
                     horizontalAlignment = Alignment.CenterHorizontally,
@@ -574,7 +604,7 @@ private fun FlatBottomBar(selected: Tab, onSelect: (Tab) -> Unit) {
                 ) {
                     Box(
                         Modifier
-                            .clip(RoundedCornerShape(10.dp))
+                            .clip(RoundedCornerShape(c.controlRadius))
                             .background(if (sel) c.accentSoft else Color.Transparent)
                             .padding(horizontal = 16.dp, vertical = 4.dp),
                         contentAlignment = Alignment.Center,

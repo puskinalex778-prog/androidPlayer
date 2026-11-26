@@ -5,8 +5,11 @@ import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.aura.player.data.Library
+import com.aura.player.data.Playlist
 import com.aura.player.data.RadioBrowser
 import com.aura.player.data.RadioCatalog
+import com.aura.player.data.SafEntry
+import com.aura.player.data.SafListing
 import com.aura.player.data.Station
 import com.aura.player.data.StreamOption
 import com.aura.player.data.Track
@@ -20,10 +23,12 @@ import kotlinx.coroutines.withContext
 
 data class UiSettings(
     val theme: AuraTheme = AuraTheme.COBALT,
+    val style: UiStyle = UiStyle.FLAT,
+    val visualizer: VisualizerType = VisualizerType.BARS,
     val darkMode: Int = 0,
     val amoled: Boolean = false,
     val adaptive: Boolean = true,
-    val cassette: Boolean = true,
+    val playerStage: Int = 0, // 0 = Кассета, 1 = Обложка, 2 = Визуал
     val quality: Int = 1,
 )
 
@@ -34,28 +39,45 @@ data class DeviceFolder(
     val tracks: List<Track>,
 )
 
+data class SafBrowserState(
+    val treeUri: Uri,
+    val stack: List<Pair<String, String>>, // (docId, folderName)
+    val listing: SafListing?,
+    val loading: Boolean = false,
+    val targetPlaylistId: String? = null,
+)
+
 class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     private val prefs = AudioEngine.prefs
     private val ctx get() = getApplication<Application>()
 
-    // ---------- медиатека (только добавленные пользователем треки) ----------
+    // ---------- медиатека (только добавленные пользователем треки; файлы не копируются) ----------
     val tracks = MutableStateFlow<List<Track>>(emptyList())
+    val playlists = MutableStateFlow<List<Playlist>>(Library.loadPlaylists(ctx))
     val addProgress = MutableStateFlow<Int?>(null)
     val toast = MutableStateFlow<String?>(null)
     val sort = MutableStateFlow(prefs.sort)
     private var userTracks: List<Track> = Library.loadUser(ctx)
 
-    // выборочный импорт папок с телефона (запускается только по кнопке пользователя)
+    // выборочный импорт папок с телефона (MediaStore — только по кнопке пользователя)
     val pickerFolders = MutableStateFlow<List<DeviceFolder>>(emptyList())
     val pickerLoading = MutableStateFlow(false)
+
+    // встроенный проводник по выбранному дереву SD / памяти (не сканирует всю карту!)
+    val safBrowser = MutableStateFlow<SafBrowserState?>(null)
 
     // ---------- настройки ----------
     val settings = MutableStateFlow(
         UiSettings(
             theme = AuraTheme.fromName(prefs.theme),
-            darkMode = prefs.darkMode, amoled = prefs.amoled, adaptive = prefs.adaptiveColor,
-            cassette = prefs.cassetteView, quality = prefs.quality,
+            style = UiStyle.fromName(prefs.uiStyle),
+            visualizer = VisualizerType.fromName(prefs.visualizer),
+            darkMode = prefs.darkMode,
+            amoled = prefs.amoled,
+            adaptive = prefs.adaptiveColor,
+            playerStage = prefs.playerStage.coerceIn(0, 2),
+            quality = prefs.quality,
         )
     )
 
@@ -78,27 +100,6 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     // ===================== Медиатека =====================
 
-    /** Пересканировать только папки, которые пользователь ранее добавил */
-    fun rescanFolders() {
-        val trees = Library.loadTrees(ctx)
-        if (trees.isEmpty()) {
-            toast.value = "Нет подключённых папок. Добавьте файлы или папку."
-            return
-        }
-        viewModelScope.launch {
-            addProgress.value = 0
-            val found = withContext(Dispatchers.IO) {
-                trees.flatMap { Library.scanTree(ctx, Uri.parse(it)) { n -> addProgress.value = n } }
-            }
-            val before = userTracks.size
-            mergeUser(found)
-            addProgress.value = null
-            val added = (userTracks.size - before).coerceAtLeast(0)
-            toast.value = if (added > 0) "Новых треков: $added" else "Все папки актуальны"
-        }
-    }
-
-    /** Сканирует устройство ТОЛЬКО для окна выборочного импорта, ничего само не добавляет */
     fun loadDeviceFolders() {
         if (pickerLoading.value) return
         pickerLoading.value = true
@@ -121,13 +122,20 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    fun importTracks(list: List<Track>) {
+    fun importTracks(list: List<Track>, targetPlaylistId: String? = null) {
         if (list.isEmpty()) return
         val marked = list.map { it.copy(userAdded = true) }
         val before = userTracks.size
         mergeUser(marked)
+        if (targetPlaylistId != null) {
+            addTracksToPlaylist(targetPlaylistId, marked.map { it.uri })
+        }
         val diff = (userTracks.size - before).coerceAtLeast(0)
-        toast.value = if (diff > 0) "Добавлено треков: $diff" else "Эти треки уже есть в списке"
+        toast.value = when {
+            targetPlaylistId != null -> "Добавлено в плейлист: ${marked.size}"
+            diff > 0 -> "Добавлено треков: $diff"
+            else -> "Эти треки уже есть в списке"
+        }
     }
 
     private fun publish() {
@@ -144,39 +152,129 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setSort(s: Int) { sort.value = s; prefs.sort = s; publish() }
 
-    fun addFiles(uris: List<Uri>) {
+    fun addFiles(uris: List<Uri>, targetPlaylistId: String? = null) {
         if (uris.isEmpty()) return
         viewModelScope.launch {
             addProgress.value = 0
+            var skipped = 0
             val list = withContext(Dispatchers.IO) {
-                uris.mapIndexed { i, u ->
+                val res = ArrayList<Track>()
+                uris.forEach { u ->
+                    if (!Library.isAllowedUri(ctx, u)) {
+                        skipped++
+                        return@forEach
+                    }
                     Library.persist(ctx, u)
-                    addProgress.value = i + 1
-                    Library.readTrack(ctx, u)
+                    res += Library.readTrack(ctx, u)
+                    addProgress.value = res.size
                 }
+                res
             }
             val before = userTracks.size
             mergeUser(list)
-            addProgress.value = null
-            val diff = (userTracks.size - before).coerceAtLeast(0)
-            toast.value = if (diff > 0) "Добавлено треков: $diff" else "Файлы уже в списке"
-        }
-    }
-
-    fun addFolder(tree: Uri) {
-        viewModelScope.launch {
-            Library.persist(ctx, tree)
-            Library.saveTrees(ctx, Library.loadTrees(ctx) + tree.toString())
-            addProgress.value = 0
-            val list = withContext(Dispatchers.IO) { Library.scanTree(ctx, tree) { n -> addProgress.value = n } }
-            val before = userTracks.size
-            mergeUser(list)
+            if (targetPlaylistId != null && list.isNotEmpty()) {
+                addTracksToPlaylist(targetPlaylistId, list.map { it.uri })
+            }
             addProgress.value = null
             val diff = (userTracks.size - before).coerceAtLeast(0)
             toast.value = when {
-                list.isEmpty() -> "В папке не найдено аудиофайлов"
-                diff > 0 -> "Добавлено треков: $diff"
-                else -> "Треки из этой папки уже добавлены"
+                list.isEmpty() && skipped > 0 -> "Пропущено неподдерживаемых файлов (m4a/mp4): $skipped"
+                targetPlaylistId != null -> "Добавлено в плейлист: ${list.size}" + if (skipped > 0) " (пропущено m4a/mp4: $skipped)" else ""
+                diff > 0 -> "Добавлено треков: $diff" + if (skipped > 0) " (пропущено m4a/mp4: $skipped)" else ""
+                else -> "Файлы уже есть в списке"
+            }
+        }
+    }
+
+    // ===================== Безопасный выбор папки (в т.ч. SD — не сканирует всю карту!) =====================
+
+    fun openSafTree(treeUri: Uri, targetPlaylistId: String? = null) {
+        Library.persist(ctx, treeUri)
+        viewModelScope.launch {
+            safBrowser.value = SafBrowserState(treeUri, emptyList(), null, loading = true, targetPlaylistId = targetPlaylistId)
+            val listing = withContext(Dispatchers.IO) { Library.listSafDirectory(ctx, treeUri) }
+            // Если внутри выбранной папки нет подпапок и есть музыка — добавляем сразу только эту папку
+            if (listing.folders.isEmpty() && listing.files.isNotEmpty()) {
+                safBrowser.value = null
+                importSafFiles(treeUri, listing.docId, listing.folderName, recursive = false, targetPlaylistId = targetPlaylistId)
+            } else {
+                // Иначе открываем быстрый проводник, чтобы пользователь выбрал конкретную нужную папку!
+                safBrowser.value = SafBrowserState(
+                    treeUri = treeUri,
+                    stack = listOf(listing.docId to listing.folderName),
+                    listing = listing,
+                    loading = false,
+                    targetPlaylistId = targetPlaylistId,
+                )
+            }
+        }
+    }
+
+    fun safNavigateInto(folder: SafEntry) {
+        val st = safBrowser.value ?: return
+        viewModelScope.launch {
+            safBrowser.value = st.copy(loading = true)
+            val listing = withContext(Dispatchers.IO) {
+                Library.listSafDirectory(ctx, st.treeUri, folder.docId, folder.name)
+            }
+            safBrowser.value = st.copy(
+                stack = st.stack + (folder.docId to folder.name),
+                listing = listing,
+                loading = false,
+            )
+        }
+    }
+
+    fun safNavigateUp() {
+        val st = safBrowser.value ?: return
+        if (st.stack.size <= 1) {
+            safBrowser.value = null
+            return
+        }
+        val newStack = st.stack.dropLast(1)
+        val (docId, name) = newStack.last()
+        viewModelScope.launch {
+            safBrowser.value = st.copy(loading = true)
+            val listing = withContext(Dispatchers.IO) {
+                Library.listSafDirectory(ctx, st.treeUri, docId, name)
+            }
+            safBrowser.value = st.copy(stack = newStack, listing = listing, loading = false)
+        }
+    }
+
+    fun safClose() { safBrowser.value = null }
+
+    fun safImportCurrent(recursive: Boolean) {
+        val st = safBrowser.value ?: return
+        val cur = st.listing ?: return
+        safBrowser.value = null
+        importSafFiles(st.treeUri, cur.docId, cur.folderName, recursive = recursive, targetPlaylistId = st.targetPlaylistId)
+    }
+
+    private fun importSafFiles(
+        treeUri: Uri,
+        docId: String,
+        folderName: String,
+        recursive: Boolean,
+        targetPlaylistId: String?,
+    ) {
+        viewModelScope.launch {
+            addProgress.value = 0
+            val list = withContext(Dispatchers.IO) {
+                Library.scanSafFolder(ctx, treeUri, docId, folderName, recursive = recursive) { n -> addProgress.value = n }
+            }
+            val before = userTracks.size
+            mergeUser(list)
+            if (targetPlaylistId != null && list.isNotEmpty()) {
+                addTracksToPlaylist(targetPlaylistId, list.map { it.uri })
+            }
+            addProgress.value = null
+            val diff = (userTracks.size - before).coerceAtLeast(0)
+            toast.value = when {
+                list.isEmpty() -> "В папке «$folderName» не найдено музыкальных файлов"
+                targetPlaylistId != null -> "Добавлено в плейлист из «$folderName»: ${list.size}"
+                diff > 0 -> "Добавлено из «$folderName»: $diff"
+                else -> "Треки из «$folderName» уже есть в списке"
             }
         }
     }
@@ -194,22 +292,28 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     fun remove(t: Track) {
         userTracks = userTracks.filterNot { it.uri == t.uri }
         Library.saveUser(ctx, userTracks)
+        // чистим ссылку из плейлистов
+        val updatedPl = playlists.value.map { p -> p.copy(uris = p.uris.filterNot { it == t.uri }) }
+        playlists.value = updatedPl
+        Library.savePlaylists(ctx, updatedPl)
         publish()
     }
 
     fun clearLibrary() {
         userTracks = emptyList()
         Library.saveUser(ctx, emptyList())
-        Library.saveTrees(ctx, emptyList())
         if (!AudioEngine.now.value.isRadio) AudioEngine.stop()
         prefs.lastUri = ""
         publish()
         toast.value = "Список музыки очищен"
     }
 
-    /** Файл, открытый из файлового менеджера («Открыть с помощью…») */
     fun openExternal(uri: Uri) {
         viewModelScope.launch {
+            if (!Library.isAllowedUri(ctx, uri)) {
+                toast.value = "Формат m4a/mp4 отключён в плеере"
+                return@launch
+            }
             Library.persist(ctx, uri)
             val t = withContext(Dispatchers.IO) { Library.readTrack(ctx, uri) }
             val persisted = ctx.contentResolver.persistedUriPermissions.any { it.uri == uri }
@@ -229,13 +333,79 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         AudioEngine.playTracks(list, list.indices.random())
     }
 
+    // ===================== Плейлисты =====================
+
+    fun createPlaylist(name: String, initialUris: List<String> = emptyList()): Playlist {
+        val clean = name.trim().ifBlank { "Плейлист ${playlists.value.size + 1}" }
+        val p = Playlist("pl_" + System.currentTimeMillis(), clean, initialUris.distinct())
+        val next = playlists.value + p
+        playlists.value = next
+        Library.savePlaylists(ctx, next)
+        toast.value = "Создан плейлист «$clean»"
+        return p
+    }
+
+    fun renamePlaylist(id: String, name: String) {
+        val clean = name.trim()
+        if (clean.isBlank()) return
+        val next = playlists.value.map { if (it.id == id) it.copy(name = clean) else it }
+        playlists.value = next
+        Library.savePlaylists(ctx, next)
+    }
+
+    fun deletePlaylist(id: String) {
+        val next = playlists.value.filterNot { it.id == id }
+        playlists.value = next
+        Library.savePlaylists(ctx, next)
+        toast.value = "Плейлист удалён"
+    }
+
+    fun toggleTrackInPlaylist(playlistId: String, uri: String) {
+        val next = playlists.value.map { p ->
+            if (p.id != playlistId) p
+            else if (uri in p.uris) p.copy(uris = p.uris.filterNot { it == uri })
+            else p.copy(uris = p.uris + uri)
+        }
+        playlists.value = next
+        Library.savePlaylists(ctx, next)
+    }
+
+    fun addTracksToPlaylist(playlistId: String, uris: List<String>) {
+        if (uris.isEmpty()) return
+        val next = playlists.value.map { p ->
+            if (p.id != playlistId) p else p.copy(uris = (p.uris + uris).distinct())
+        }
+        playlists.value = next
+        Library.savePlaylists(ctx, next)
+    }
+
+    fun removeTrackFromPlaylist(playlistId: String, uri: String) {
+        val next = playlists.value.map { p ->
+            if (p.id != playlistId) p else p.copy(uris = p.uris.filterNot { it == uri })
+        }
+        playlists.value = next
+        Library.savePlaylists(ctx, next)
+    }
+
+    fun tracksOf(p: Playlist): List<Track> {
+        val map = userTracks.associateBy { it.uri }
+        return p.uris.mapNotNull { map[it] }
+    }
+
     // ===================== Настройки =====================
 
     fun setTheme(t: AuraTheme) { prefs.theme = t.name; settings.update { it.copy(theme = t) } }
+    fun setUiStyle(s: UiStyle) { prefs.uiStyle = s.name; settings.update { it.copy(style = s) } }
+    fun setVisualizer(v: VisualizerType) { prefs.visualizer = v.name; settings.update { it.copy(visualizer = v) } }
+    fun cycleVisualizer() { setVisualizer(settings.value.visualizer.next()) }
     fun setDarkMode(m: Int) { prefs.darkMode = m; settings.update { it.copy(darkMode = m) } }
     fun setAmoled(v: Boolean) { prefs.amoled = v; settings.update { it.copy(amoled = v) } }
     fun setAdaptive(v: Boolean) { prefs.adaptiveColor = v; settings.update { it.copy(adaptive = v) } }
-    fun setCassette(v: Boolean) { prefs.cassetteView = v; settings.update { it.copy(cassette = v) } }
+    fun setPlayerStage(stage: Int) {
+        val s = stage.coerceIn(0, 2)
+        prefs.playerStage = s
+        settings.update { it.copy(playerStage = s) }
+    }
     fun setQuality(q: Int) { prefs.quality = q; settings.update { it.copy(quality = q) } }
 
     // ===================== Радио =====================

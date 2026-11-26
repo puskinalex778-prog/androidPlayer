@@ -16,29 +16,55 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
 
+data class SafEntry(
+    val docId: String,
+    val name: String,
+    val uri: Uri,
+    val isDir: Boolean,
+)
+
+data class SafListing(
+    val docId: String,
+    val folderName: String,
+    val folders: List<SafEntry>,
+    val files: List<SafEntry>,
+)
+
 /**
- * Медиатека: сканирует ВСЕ хранилища (внутреннюю память и карту памяти),
- * а также файлы и папки, которые пользователь добавил вручную через системный выбор файлов.
- *
- * Почему раньше файлы с карты памяти не добавлялись:
- *  1) запрашивался только основной том MediaStore — SD-карта на Android 10+ это отдельный том;
- *  2) фильтр пропускал только MP3/WAV, а на карте часто FLAC/M4A/OGG;
- *  3) не сохранялось постоянное разрешение на выбранный файл — после перезапуска он «пропадал».
+ * Медиатека и плейлисты.
+ * Файлы НИКОГДА не копируются — сохраняются только URI-ссылки и теги.
+ * Форматы m4a/mp4/m4b/mm4/3gp/amr исключены из сканирования и добавления.
  */
 object Library {
 
     const val UNKNOWN_ARTIST = "Неизвестный исполнитель"
 
-    val audioExt = setOf(
-        "mp3", "m4a", "aac", "flac", "wav", "ogg", "oga", "opus", "amr", "3gp", "mka", "webm", "mp4", "m4b", "wave", "aif", "aiff"
+    // Только музыкальные форматы (без m4a / mp4 / m4b / mm4 / 3gp / amr / видео)
+    val allowedExt = setOf(
+        "mp3", "flac", "wav", "wave", "ogg", "oga", "opus", "aac", "mka", "aif", "aiff", "wma"
+    )
+    private val blockedExt = setOf(
+        "mp4", "m4a", "m4b", "m4p", "m4v", "mm4", "3gp", "3gpp", "amr", "webm", "mkv", "avi", "mov"
     )
 
-    fun isAudioName(name: String?): Boolean {
-        val n = name?.lowercase() ?: return false
-        return n.substringAfterLast('.', "") in audioExt
+    fun isAllowedAudio(name: String?, mime: String? = null): Boolean {
+        val ext = name?.lowercase()?.substringAfterLast('.', "") ?: ""
+        if (ext in blockedExt) return false
+        val m = mime?.lowercase() ?: ""
+        if (m.startsWith("video/") || m.contains("mp4") || m.contains("m4a") || m.contains("mm4") || m.contains("3gpp") || m.contains("amr")) {
+            return false
+        }
+        if (ext.isNotBlank()) return ext in allowedExt
+        return m.startsWith("audio/") || m == "application/ogg" || m == "application/x-flac"
     }
 
-    // ===================== Сканирование MediaStore =====================
+    fun isAllowedUri(context: Context, uri: Uri): Boolean {
+        val name = displayName(context, uri) ?: uri.lastPathSegment
+        val mime = runCatching { context.contentResolver.getType(uri) }.getOrNull()
+        return isAllowedAudio(name, mime)
+    }
+
+    // ===================== Сканирование MediaStore (только по запросу пользователя) =====================
 
     fun scanDevice(context: Context): List<Track> {
         val out = LinkedHashMap<String, Track>()
@@ -72,7 +98,6 @@ object Library {
             MediaStore.Audio.Media.DATA,
         )
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) cols += MediaStore.Audio.Media.RELATIVE_PATH
-        // Без фильтра IS_MUSIC: на карте памяти файлы часто лежат вне папки Music и не помечены как музыка
         val selection = "${MediaStore.Audio.Media.IS_RINGTONE} = 0 AND ${MediaStore.Audio.Media.IS_NOTIFICATION} = 0 AND " +
             "${MediaStore.Audio.Media.IS_ALARM} = 0 AND (${MediaStore.Audio.Media.DURATION} >= 20000 OR ${MediaStore.Audio.Media.DURATION} IS NULL OR ${MediaStore.Audio.Media.DURATION} = 0)"
         val primaryRoot = runCatching { Environment.getExternalStorageDirectory().absolutePath }.getOrDefault("/storage/emulated/0")
@@ -90,7 +115,7 @@ object Library {
                 while (c.moveToNext()) {
                     val name = c.str(nC)
                     val mime = c.str(mC)
-                    if (!mime.startsWith("audio") && !isAudioName(name) && mime != "application/ogg") continue
+                    if (!isAllowedAudio(name, mime)) continue
                     val id = c.getLong(idC)
                     val data = c.str(pC)
                     val rel = c.str(rC)
@@ -120,22 +145,20 @@ object Library {
 
     private fun Cursor.str(i: Int): String = if (i < 0) "" else (runCatching { getString(i) }.getOrNull() ?: "")
 
-    // ===================== Ручное добавление (SAF) =====================
+    // ===================== Ручное добавление и проводник по SAF (без рекурсивной свалки) =====================
 
-    /** Сохраняем разрешение на файл/папку навсегда, иначе после перезапуска доступ теряется */
     fun persist(context: Context, uri: Uri) {
         runCatching {
             context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
         }
     }
 
-    fun readTrack(context: Context, uri: Uri, userAdded: Boolean = true): Track {
+    fun readTrack(context: Context, uri: Uri, userAdded: Boolean = true, fallbackFolder: String = ""): Track {
         val name = displayName(context, uri) ?: uri.lastPathSegment?.substringAfterLast('/') ?: "Трек"
         var title = name.substringBeforeLast('.')
         var artist = UNKNOWN_ARTIST
         var album = ""
         var duration = 0L
-        // «Исполнитель - Название.mp3»
         if (title.contains(" - ")) {
             artist = title.substringBefore(" - ").trim()
             title = title.substringAfter(" - ").trim()
@@ -152,47 +175,111 @@ object Library {
             runCatching { mmr.release() }
         }
         val sd = isSdUri(uri)
-        return Track(uri.toString(), title, artist, album, duration,
-            formatOf(name, runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: ""),
-            folder = "", userAdded = userAdded, onSdCard = sd)
+        return Track(
+            uri = uri.toString(),
+            title = title,
+            artist = artist,
+            album = album,
+            durationMs = duration,
+            format = formatOf(name, runCatching { context.contentResolver.getType(uri) }.getOrNull() ?: ""),
+            folder = fallbackFolder,
+            userAdded = userAdded,
+            onSdCard = sd,
+        )
     }
 
-    private fun isSdUri(uri: Uri): Boolean {
+    fun isSdUri(uri: Uri): Boolean {
         val s = uri.toString()
         if (!s.contains("externalstorage.documents")) return false
-        val id = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull() ?: return false
+        val id = runCatching { DocumentsContract.getDocumentId(uri) }.getOrNull()
+            ?: runCatching { DocumentsContract.getTreeDocumentId(uri) }.getOrNull()
+            ?: return false
         return !id.startsWith("primary:") && !id.startsWith("home:")
     }
 
-    /** Быстрый рекурсивный обход папки (в т.ч. на карте памяти) через DocumentsContract */
-    fun scanTree(context: Context, treeUri: Uri, onProgress: (Int) -> Unit = {}): List<Track> {
-        val out = ArrayList<Track>()
-        val cr: ContentResolver = context.contentResolver
-        val rootId = runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: return out
-        val folderName = rootId.substringAfterLast(':').substringAfterLast('/').ifBlank { "Карта памяти" }
-        val stack = ArrayDeque<Pair<String, String>>()
-        stack.add(rootId to folderName)
-        var depthGuard = 0
-        while (stack.isNotEmpty() && depthGuard < 20000) {
-            depthGuard++
-            val (docId, fName) = stack.removeLast()
-            val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, docId)
-            try {
-                cr.query(children, arrayOf(
+    /** Читает ТОЛЬКО один уровень выбранной папки (подпапки + разрешённые аудиофайлы). Очень быстро! */
+    fun listSafDirectory(context: Context, treeUri: Uri, docId: String? = null, folderLabel: String? = null): SafListing {
+        val targetId = docId ?: runCatching { DocumentsContract.getTreeDocumentId(treeUri) }.getOrNull() ?: ""
+        val name = folderLabel ?: targetId.substringAfterLast(':').substringAfterLast('/').ifBlank {
+            if (isSdUri(treeUri)) "Карта памяти" else "Память"
+        }
+        val folders = ArrayList<SafEntry>()
+        val files = ArrayList<SafEntry>()
+        if (targetId.isBlank()) return SafListing(targetId, name, folders, files)
+
+        val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, targetId)
+        try {
+            context.contentResolver.query(
+                children,
+                arrayOf(
                     DocumentsContract.Document.COLUMN_DOCUMENT_ID,
                     DocumentsContract.Document.COLUMN_DISPLAY_NAME,
                     DocumentsContract.Document.COLUMN_MIME_TYPE,
-                ), null, null, null)?.use { c ->
+                ),
+                null, null, null,
+            )?.use { c ->
+                while (c.moveToNext()) {
+                    val id = c.getString(0) ?: continue
+                    val n = c.getString(1) ?: ""
+                    val mime = c.getString(2) ?: ""
+                    if (n.startsWith(".")) continue
+                    val u = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
+                    if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
+                        folders += SafEntry(id, n, u, isDir = true)
+                    } else if (isAllowedAudio(n, mime)) {
+                        files += SafEntry(id, n, u, isDir = false)
+                    }
+                }
+            }
+        } catch (_: Exception) {
+        }
+        folders.sortWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+        files.sortWith(compareBy(String.CASE_INSENSITIVE_ORDER) { it.name })
+        return SafListing(targetId, name, folders, files)
+    }
+
+    /**
+     * Сканирует выбранную папку внутри treeUri.
+     * По умолчанию recursive = false — добавляет ТОЛЬКО файлы прямо внутри этой папки, не залезая в подпапки!
+     */
+    fun scanSafFolder(
+        context: Context,
+        treeUri: Uri,
+        docId: String,
+        folderName: String,
+        recursive: Boolean = false,
+        onProgress: (Int) -> Unit = {},
+    ): List<Track> {
+        val out = ArrayList<Track>()
+        val cr: ContentResolver = context.contentResolver
+        val stack = ArrayDeque<Pair<String, String>>()
+        stack.add(docId to folderName)
+        var guard = 0
+        while (stack.isNotEmpty() && guard < 10000) {
+            guard++
+            val (curId, curName) = stack.removeLast()
+            val children = DocumentsContract.buildChildDocumentsUriUsingTree(treeUri, curId)
+            try {
+                cr.query(
+                    children,
+                    arrayOf(
+                        DocumentsContract.Document.COLUMN_DOCUMENT_ID,
+                        DocumentsContract.Document.COLUMN_DISPLAY_NAME,
+                        DocumentsContract.Document.COLUMN_MIME_TYPE,
+                    ),
+                    null, null, null,
+                )?.use { c ->
                     while (c.moveToNext()) {
                         val id = c.getString(0) ?: continue
-                        val name = c.getString(1) ?: ""
+                        val n = c.getString(1) ?: ""
                         val mime = c.getString(2) ?: ""
+                        if (n.startsWith(".")) continue
                         if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                            if (!name.startsWith(".")) stack.add(id to name)
-                        } else if (mime.startsWith("audio") || isAudioName(name) || mime == "application/ogg") {
+                            if (recursive) stack.add(id to n)
+                        } else if (isAllowedAudio(n, mime)) {
                             val u = DocumentsContract.buildDocumentUriUsingTree(treeUri, id)
-                            out += readTrack(context, u).copy(folder = fName)
-                            if (out.size % 10 == 0) onProgress(out.size)
+                            out += readTrack(context, u, userAdded = true, fallbackFolder = curName)
+                            if (out.size % 5 == 0) onProgress(out.size)
                         }
                     }
                 }
@@ -220,24 +307,28 @@ object Library {
             mime.contains("flac") -> "FLAC"
             mime.contains("wav") -> "WAV"
             mime.contains("ogg") -> "OGG"
-            mime.contains("mp4") || mime.contains("aac") -> "M4A"
+            mime.contains("opus") -> "OPUS"
+            mime.contains("aac") -> "AAC"
             else -> "AUDIO"
         }
     }
 
-    // ===================== Хранение добавленных вручную =====================
+    // ===================== Хранение треков и плейлистов (только ссылки, без копирования файлов) =====================
 
-    private fun file(context: Context) = File(context.filesDir, "user_tracks.json")
+    private fun userFile(context: Context) = File(context.filesDir, "user_tracks.json")
+    private fun playlistsFile(context: Context) = File(context.filesDir, "playlists.json")
 
     fun loadUser(context: Context): List<Track> = try {
-        val f = file(context)
+        val f = userFile(context)
         if (!f.exists()) emptyList() else {
             val arr = JSONArray(f.readText())
-            (0 until arr.length()).map { i ->
+            (0 until arr.length()).mapNotNull { i ->
                 val o = arr.getJSONObject(i)
+                val fmt = o.optString("f")
+                if (fmt.lowercase() in blockedExt) return@mapNotNull null
                 Track(
                     uri = o.getString("u"), title = o.optString("t"), artist = o.optString("a", UNKNOWN_ARTIST),
-                    album = o.optString("al"), durationMs = o.optLong("d"), format = o.optString("f"),
+                    album = o.optString("al"), durationMs = o.optLong("d"), format = fmt,
                     folder = o.optString("fo"), userAdded = true, onSdCard = o.optBoolean("sd"),
                 )
             }
@@ -252,13 +343,34 @@ object Library {
                 put("d", t.durationMs); put("f", t.format); put("fo", t.folder); put("sd", t.onSdCard)
             })
         }
-        runCatching { file(context).writeText(arr.toString()) }
+        runCatching { userFile(context).writeText(arr.toString()) }
     }
 
-    fun loadTrees(context: Context): List<String> =
-        context.getSharedPreferences("aura", Context.MODE_PRIVATE).getStringSet("trees", emptySet())?.toList() ?: emptyList()
+    fun loadPlaylists(context: Context): List<Playlist> = try {
+        val f = playlistsFile(context)
+        if (!f.exists()) emptyList() else {
+            val arr = JSONArray(f.readText())
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONObject(i)
+                val ua = o.optJSONArray("u") ?: JSONArray()
+                Playlist(
+                    id = o.getString("id"),
+                    name = o.getString("n"),
+                    uris = (0 until ua.length()).map { j -> ua.getString(j) },
+                )
+            }
+        }
+    } catch (_: Exception) { emptyList() }
 
-    fun saveTrees(context: Context, trees: Collection<String>) {
-        context.getSharedPreferences("aura", Context.MODE_PRIVATE).edit().putStringSet("trees", trees.toSet()).apply()
+    fun savePlaylists(context: Context, list: List<Playlist>) {
+        val arr = JSONArray()
+        list.forEach { p ->
+            arr.put(JSONObject().apply {
+                put("id", p.id)
+                put("n", p.name)
+                put("u", JSONArray().apply { p.uris.forEach { put(it) } })
+            })
+        }
+        runCatching { playlistsFile(context).writeText(arr.toString()) }
     }
 }

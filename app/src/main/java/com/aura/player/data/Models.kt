@@ -1,6 +1,6 @@
 package com.aura.player.data
 
-/** Локальный трек (из памяти телефона, с карты памяти или добавленный вручную). */
+/** Локальный трек (хранится только путь URI и теги, сам файл не копируется). */
 data class Track(
     val uri: String,
     val title: String,
@@ -14,6 +14,13 @@ data class Track(
 ) {
     val id: String get() = "local:$uri"
 }
+
+/** Пользовательский плейлист (хранит только список URI-ссылок). */
+data class Playlist(
+    val id: String,
+    val name: String,
+    val uris: List<String> = emptyList(),
+)
 
 /** Один поток станции — конкретный битрейт. */
 data class StreamOption(

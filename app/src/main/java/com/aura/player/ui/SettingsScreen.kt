@@ -7,6 +7,7 @@ import android.provider.Settings
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -18,11 +19,12 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
@@ -31,7 +33,6 @@ import androidx.compose.material.icons.rounded.DeleteSweep
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.SdCard
 import androidx.compose.material.icons.rounded.Tune
-import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -52,6 +53,7 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
@@ -74,10 +76,10 @@ fun SettingsScreen(
     var sleepDialog by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
 
-    Column(Modifier.fillMaxSize().background(c.bg)) {
+    Column(Modifier.fillMaxSize()) {
         FlatTopBar(
             title = if (section == 0) "Темы и вид" else "Настройки",
-            subtitle = if (section == 0) "Тема: ${s.theme.title}" else "Плеер и воспроизведение",
+            subtitle = if (section == 0) "${s.style.title} · ${s.theme.title}" else "Плеер и воспроизведение",
             onMenu = onMenu,
         )
 
@@ -95,7 +97,20 @@ fun SettingsScreen(
             contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = bottomPadding.dp),
         ) {
             if (section == 0) {
-                // ===================== ТЕМЫ И ВИД =====================
+                // ===================== СТИЛЬ ОФОРМЛЕНИЯ =====================
+                item {
+                    SectionHeader("Стиль оформления")
+                    Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                        UiStyle.entries.chunked(2).forEach { row ->
+                            Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                                row.forEach { st ->
+                                    StylePreviewCard(st, s.style == st, Modifier.weight(1f)) { vm.setUiStyle(st) }
+                                }
+                            }
+                        }
+                    }
+                }
+                // ===================== РЕЖИМ ЯРКОСТИ =====================
                 item {
                     SectionHeader("Режим яркости")
                     FlatSegmentedControl(
@@ -104,6 +119,22 @@ fun SettingsScreen(
                         onSelect = { vm.setDarkMode(it) },
                     )
                 }
+                // ===================== ВИЗУАЛИЗАЦИЯ =====================
+                item {
+                    SectionHeader("Визуализация частот")
+                    Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        VisualizerType.entries.forEach { vt ->
+                            FlatChip(vt.title, s.visualizer == vt, onClick = { vm.setVisualizer(vt) })
+                        }
+                    }
+                    SectionHeader("Экран плеера по умолчанию")
+                    FlatSegmentedControl(
+                        options = listOf("Кассета", "Обложка", "Визуал"),
+                        selectedIndex = s.playerStage,
+                        onSelect = { vm.setPlayerStage(it) },
+                    )
+                }
+                // ===================== ЦВЕТОВАЯ СХЕМА =====================
                 item {
                     SectionHeader("Цветовая схема")
                     val themes = AuraTheme.entries.filter { it != AuraTheme.DYNAMIC || Build.VERSION.SDK_INT >= Build.VERSION_CODES.S }
@@ -119,14 +150,12 @@ fun SettingsScreen(
                     }
                 }
                 item {
-                    SectionHeader("Интерфейс")
+                    SectionHeader("Дополнительно")
                     FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(0.dp)) {
                         Column {
                             ToggleRow("Чёрный AMOLED-фон", "Чисто-чёрный фон в тёмном режиме", s.amoled) { vm.setAmoled(it) }
                             HorizontalDivider(color = c.border)
                             ToggleRow("Акцент из обложки", "Подстраивать цвет кнопок под обложку трека", s.adaptive) { vm.setAdaptive(it) }
-                            HorizontalDivider(color = c.border)
-                            ToggleRow("Ретро-кассета в плеере", "Кассета с обложкой альбома на наклейке", s.cassette) { vm.setCassette(it) }
                         }
                     }
                 }
@@ -182,12 +211,11 @@ fun SettingsScreen(
                         Row(horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Top) {
                             Icon(Icons.Rounded.SdCard, null, tint = c.accent)
                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                Text("Как добавлять песни с SD-карты", style = MaterialTheme.typography.titleSmall, color = c.text)
+                                Text("Как добавлять папки с SD-карты", style = MaterialTheme.typography.titleSmall, color = c.text)
                                 Text(
-                                    "1. Нажмите «Добавить папку» в разделе «Моя музыка».\n" +
-                                        "2. В системном окне откройте меню ☰ слева сверху и выберите карту памяти.\n" +
-                                        "3. Откройте нужную папку и нажмите «Использовать эту папку».\n" +
-                                        "4. Или используйте «Открыть с помощью → Aura Player» из любого проводника.",
+                                    "1. Нажмите «Папка / SD» в разделе «Моя музыка».\n" +
+                                        "2. Если выбрали корень карты памяти — откроется встроенный проводник: перейдите в нужную папку и нажмите «Добавить только эту папку».\n" +
+                                        "3. Файлы не копируются (хранятся только пути). Форматы m4a/mp4 исключены.",
                                     style = MaterialTheme.typography.bodySmall,
                                     color = c.textDim,
                                 )
@@ -197,7 +225,7 @@ fun SettingsScreen(
                 }
                 item {
                     Text(
-                        "Aura Player 1.1 · Flat Edition 2026\nKotlin · Jetpack Compose · Media3",
+                        "Aura Player 1.2 · 2026\nKotlin · Jetpack Compose · Media3",
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textDim,
                         textAlign = TextAlign.Center,
@@ -212,7 +240,7 @@ fun SettingsScreen(
     if (confirmClear) {
         AlertDialog(
             onDismissRequest = { confirmClear = false },
-            containerColor = c.surface,
+            containerColor = c.surfaceSolid,
             title = { Text("Очистить список?", color = c.text) },
             text = { Text("Все добавленные треки будут убраны из плеера. Файлы на телефоне останутся нетронутыми.", color = c.textDim) },
             confirmButton = {
@@ -224,9 +252,54 @@ fun SettingsScreen(
 }
 
 @Composable
+private fun StylePreviewCard(st: UiStyle, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
+    val c = LocalAura.current
+    val radius = when (st) {
+        UiStyle.FLAT -> 12.dp
+        UiStyle.GLASS -> 16.dp
+        UiStyle.SOFT -> 20.dp
+        UiStyle.RETRO -> 4.dp
+    }
+    val shape = RoundedCornerShape(radius)
+    Column(
+        modifier
+            .clip(shape)
+            .background(if (selected) c.accentSoft else c.surface)
+            .border(if (selected) 2.dp else c.borderWidth, if (selected) c.accent else c.border, shape)
+            .clickable(onClick = onClick)
+            .padding(12.dp),
+        verticalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Text(
+                st.title,
+                style = MaterialTheme.typography.titleSmall,
+                fontFamily = if (st == UiStyle.RETRO) FontFamily.Monospace else FontFamily.Default,
+                fontWeight = FontWeight.Bold,
+                color = if (selected) c.accent else c.text,
+                modifier = Modifier.weight(1f),
+                maxLines = 1,
+            )
+            if (selected) {
+                Box(Modifier.size(18.dp).clip(CircleShape).background(c.accent), contentAlignment = Alignment.Center) {
+                    Icon(Icons.Rounded.Check, null, tint = c.onAccent, modifier = Modifier.size(12.dp))
+                }
+            }
+        }
+        Text(
+            st.desc,
+            style = MaterialTheme.typography.bodySmall,
+            color = c.textDim,
+            maxLines = 2,
+            overflow = TextOverflow.Ellipsis,
+        )
+    }
+}
+
+@Composable
 private fun ThemePreviewCard(t: AuraTheme, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val c = LocalAura.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(c.cardRadius)
     val previewAccent = if (t == AuraTheme.MONO) (if (c.dark) Color(0xFFF4F5F8) else Color(0xFF14161D)) else t.accent
     val previewBg = if (c.dark) Color(0xFF0D0E12) else Color(0xFFF3F4F7)
     val previewCard = if (c.dark) Color(0xFF1B1E27) else Color(0xFFFFFFFF)
@@ -235,17 +308,16 @@ private fun ThemePreviewCard(t: AuraTheme, selected: Boolean, modifier: Modifier
         modifier
             .clip(shape)
             .background(if (selected) c.accentSoft else c.surface)
-            .border(if (selected) 2.dp else 1.dp, if (selected) c.accent else c.border, shape)
+            .border(if (selected) 2.dp else c.borderWidth, if (selected) c.accent else c.border, shape)
             .clickable(onClick = onClick)
             .padding(10.dp),
     ) {
-        // мини-превью плоского интерфейса темы
         Column(
             Modifier
                 .fillMaxWidth()
-                .clip(RoundedCornerShape(10.dp))
+                .clip(RoundedCornerShape(c.controlRadius))
                 .background(previewBg)
-                .border(1.dp, c.border, RoundedCornerShape(10.dp))
+                .border(1.dp, c.border, RoundedCornerShape(c.controlRadius))
                 .padding(8.dp),
             verticalArrangement = Arrangement.spacedBy(6.dp),
         ) {
@@ -305,7 +377,7 @@ private fun SettingRow(
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Box(
-            Modifier.size(36.dp).clip(RoundedCornerShape(10.dp)).background(if (danger) c.danger.copy(alpha = 0.14f) else c.accentSoft),
+            Modifier.size(36.dp).clip(RoundedCornerShape(c.controlRadius)).background(if (danger) c.danger.copy(alpha = 0.14f) else c.accentSoft),
             contentAlignment = Alignment.Center,
         ) {
             Icon(icon, null, tint = if (danger) c.danger else c.accent, modifier = Modifier.size(19.dp))

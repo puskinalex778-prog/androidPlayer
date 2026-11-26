@@ -36,6 +36,7 @@ import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Album
 import androidx.compose.material.icons.rounded.Bedtime
@@ -79,8 +80,11 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.scale
+import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.pointer.pointerInput
@@ -110,26 +114,26 @@ fun rememberProgress(): Pair<Long, Long> {
     return pos to dur
 }
 
-// ===================== Flat Mini-Player =====================
+// ===================== Адаптивный мини-плеер =====================
 
 @Composable
 fun MiniPlayer(now: NowPlaying, onOpen: () -> Unit, modifier: Modifier = Modifier) {
     val c = LocalAura.current
     val (pos, dur) = rememberProgress()
     val art by AudioEngine.art.collectAsState()
+    val bg = if (c.style == UiStyle.GLASS) c.surfaceSolid.copy(alpha = 0.88f) else c.surface
     Column(
         modifier
             .fillMaxWidth()
-            .background(c.surface)
+            .background(bg)
             .clickable(onClick = onOpen),
     ) {
-        // тонкая полоса прогресса по верхнему краю мини-плеера
         if (!now.isRadio && dur > 0) {
             Box(Modifier.fillMaxWidth().height(2.dp).background(c.border)) {
                 Box(Modifier.fillMaxWidth((pos.toFloat() / dur).coerceIn(0f, 1f)).height(2.dp).background(c.accent))
             }
         } else {
-            HorizontalDivider(thickness = 1.dp, color = c.border)
+            HorizontalDivider(thickness = c.borderWidth, color = c.border)
         }
         Row(
             Modifier.fillMaxWidth().padding(horizontal = 12.dp, vertical = 8.dp),
@@ -139,10 +143,11 @@ fun MiniPlayer(now: NowPlaying, onOpen: () -> Unit, modifier: Modifier = Modifie
             if (now.isRadio && st != null) {
                 StationLogo(st, size = 44.dp)
             } else {
-                Box(Modifier.size(44.dp).clip(RoundedCornerShape(10.dp)).border(1.dp, c.border, RoundedCornerShape(10.dp))) {
+                val shape = RoundedCornerShape(if (c.style == UiStyle.RETRO) 4.dp else 10.dp)
+                Box(Modifier.size(44.dp).clip(shape).border(c.borderWidth, c.border, shape)) {
                     val a = art
                     if (a != null) Image(a.asImageBitmap(), null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                    else ArtThumb(null, now.title, size = 44.dp, corner = 10.dp)
+                    else ArtThumb(null, now.title, size = 44.dp)
                 }
             }
             Column(Modifier.weight(1f).padding(horizontal = 12.dp)) {
@@ -182,12 +187,19 @@ fun MiniPlayer(now: NowPlaying, onOpen: () -> Unit, modifier: Modifier = Modifie
 @Composable
 fun FlatPlayButton(playing: Boolean, size: Int, onClick: () -> Unit) {
     val c = LocalAura.current
-    val corner by animateFloatAsState(if (playing) 28f else 50f, spring(), label = "corner")
+    val targetCorner = when (c.style) {
+        UiStyle.RETRO -> if (playing) 14f else 22f
+        else -> if (playing) 28f else 50f
+    }
+    val corner by animateFloatAsState(targetCorner, spring(), label = "corner")
+    val shape = RoundedCornerShape(corner.toInt())
+    val bg = if (c.style == UiStyle.GLASS) Brush.linearGradient(listOf(c.accent, c.accent2)) else SolidColor(c.accent)
     Box(
         Modifier
             .size(size.dp)
-            .clip(RoundedCornerShape(corner.toInt()))
-            .background(c.accent)
+            .then(if (c.style == UiStyle.SOFT) Modifier.shadow(8.dp, shape) else Modifier)
+            .clip(shape)
+            .background(bg)
             .clickable(onClick = onClick),
         contentAlignment = Alignment.Center,
     ) {
@@ -202,7 +214,7 @@ fun FlatPlayButton(playing: Boolean, size: Int, onClick: () -> Unit) {
     }
 }
 
-// ===================== Полноэкранный Flat-плеер =====================
+// ===================== Полноэкранный плеер =====================
 
 @OptIn(ExperimentalFoundationApi::class, ExperimentalMaterial3Api::class)
 @Composable
@@ -224,255 +236,309 @@ fun FullPlayer(
     var seeking by remember { mutableStateOf<Float?>(null) }
     var showQueue by remember { mutableStateOf(false) }
     var showSleep by remember { mutableStateOf(false) }
+    var showPlaylistAdd by remember { mutableStateOf(false) }
     var beat by remember { mutableFloatStateOf(0f) }
-    val cassette = settings.cassette
 
-    Column(
-        Modifier
-            .fillMaxSize()
-            .background(c.bg)
-            .statusBarsPadding()
-            .navigationBarsPadding()
-            .padding(horizontal = 20.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        // ---- верхняя панель ----
-        Row(
-            Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = onClose) {
-                Icon(Icons.Rounded.KeyboardArrowDown, "Свернуть", tint = c.text, modifier = Modifier.size(30.dp))
-            }
-            Box(Modifier.weight(1f).padding(horizontal = 12.dp)) {
-                FlatSegmentedControl(
-                    options = listOf("Кассета", "Обложка"),
-                    selectedIndex = if (cassette) 0 else 1,
-                    onSelect = { vm.setCassette(it == 0) },
-                )
-            }
-            IconButton(onClick = { if (!now.isRadio) showQueue = true else onClose() }) {
-                Icon(
-                    if (!now.isRadio) Icons.AutoMirrored.Rounded.QueueMusic else Icons.Rounded.Radio,
-                    "Очередь",
-                    tint = c.text,
-                )
-            }
-        }
+    val stage = settings.playerStage
+    val vizType = settings.visualizer
 
-        // ---- кассета / обложка ----
-        Box(
+    Box(Modifier.fillMaxSize()) {
+        StyleBackdrop()
+
+        Column(
             Modifier
-                .weight(1f)
-                .fillMaxWidth()
-                .pointerInput(now.isRadio) {
-                    if (now.isRadio) return@pointerInput
-                    var dx = 0f
-                    detectHorizontalDragGestures(onDragEnd = {
-                        if (dx < -120) AudioEngine.next() else if (dx > 120) AudioEngine.prev()
-                        dx = 0f
-                    }) { _, d -> dx += d }
-                },
-            contentAlignment = Alignment.Center,
+                .fillMaxSize()
+                .statusBarsPadding()
+                .navigationBarsPadding()
+                .padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            val progress = if (dur > 0) pos.toFloat() / dur else if (now.isRadio) 0.5f else 0f
-            val pulse by animateFloatAsState(1f + beat * 0.025f, spring(stiffness = 600f), label = "pulse")
-            AnimatedContent(cassette, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "view") { cas ->
-                if (cas) {
-                    Cassette(
-                        art = art,
-                        title = now.title,
-                        subtitle = if (now.isRadio) (now.streamTitle ?: now.artist)
-                        else listOf(now.artist, now.album).filter { it.isNotBlank() }.joinToString(" · "),
-                        progress = progress,
-                        playing = now.isPlaying,
-                        badge = if (now.isRadio) "LIVE" else fmtTime(pos),
-                        modifier = Modifier.fillMaxWidth().scale(pulse),
-                        seed = now.station?.name ?: now.title,
+            // ---- верхняя панель: Кассета | Обложка | Визуал ----
+            Row(
+                Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = onClose) {
+                    Icon(Icons.Rounded.KeyboardArrowDown, "Свернуть", tint = c.text, modifier = Modifier.size(30.dp))
+                }
+                Box(Modifier.weight(1f).padding(horizontal = 6.dp)) {
+                    FlatSegmentedControl(
+                        options = listOf("Кассета", "Обложка", "Визуал"),
+                        selectedIndex = stage,
+                        onSelect = { vm.setPlayerStage(it) },
                     )
-                } else {
-                    val shape = RoundedCornerShape(22.dp)
-                    val st = now.station
-                    Box(
-                        Modifier
-                            .fillMaxWidth(0.86f)
-                            .aspectRatio(1f)
-                            .scale(pulse)
-                            .clip(shape)
-                            .background(c.surface)
-                            .border(1.dp, c.border, shape),
-                        contentAlignment = Alignment.Center,
-                    ) {
-                        if (art != null) {
-                            Image(art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
-                        } else if (now.isRadio && st != null) {
-                            StationLogo(st, Modifier.fillMaxSize(), size = 300.dp)
-                        } else {
-                            val base = flatSeedColor(now.title)
-                            Box(Modifier.fillMaxSize().background(base.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
-                                Icon(Icons.Rounded.Album, null, tint = base, modifier = Modifier.size(96.dp))
+                }
+                IconButton(onClick = { if (!now.isRadio) showQueue = true else onClose() }) {
+                    Icon(
+                        if (!now.isRadio) Icons.AutoMirrored.Rounded.QueueMusic else Icons.Rounded.Radio,
+                        "Очередь",
+                        tint = c.text,
+                    )
+                }
+            }
+
+            // ---- центральная сцена ----
+            Box(
+                Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .pointerInput(now.isRadio) {
+                        if (now.isRadio) return@pointerInput
+                        var dx = 0f
+                        detectHorizontalDragGestures(onDragEnd = {
+                            if (dx < -120) AudioEngine.next() else if (dx > 120) AudioEngine.prev()
+                            dx = 0f
+                        }) { _, d -> dx += d }
+                    },
+                contentAlignment = Alignment.Center,
+            ) {
+                val progress = if (dur > 0) pos.toFloat() / dur else if (now.isRadio) 0.5f else 0f
+                val pulse by animateFloatAsState(1f + beat * 0.025f, spring(stiffness = 600f), label = "pulse")
+                AnimatedContent(stage, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "stage") { stg ->
+                    when (stg) {
+                        0 -> Cassette(
+                            art = art,
+                            title = now.title,
+                            subtitle = if (now.isRadio) (now.streamTitle ?: now.artist)
+                            else listOf(now.artist, now.album).filter { it.isNotBlank() }.joinToString(" · "),
+                            progress = progress,
+                            playing = now.isPlaying,
+                            badge = if (now.isRadio) "LIVE" else fmtTime(pos),
+                            modifier = Modifier.fillMaxWidth().scale(pulse),
+                            seed = now.station?.name ?: now.title,
+                        )
+                        1 -> {
+                            val shape = RoundedCornerShape(c.cardRadius + 4.dp)
+                            val st = now.station
+                            Box(
+                                Modifier
+                                    .fillMaxWidth(0.86f)
+                                    .aspectRatio(1f)
+                                    .scale(pulse)
+                                    .clip(shape)
+                                    .background(c.surface)
+                                    .border(c.borderWidth, c.border, shape),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                if (art != null) {
+                                    Image(art, null, Modifier.fillMaxSize(), contentScale = ContentScale.Crop)
+                                } else if (now.isRadio && st != null) {
+                                    StationLogo(st, Modifier.fillMaxSize(), size = 300.dp)
+                                } else {
+                                    val base = flatSeedColor(now.title)
+                                    Box(Modifier.fillMaxSize().background(base.copy(alpha = 0.14f)), contentAlignment = Alignment.Center) {
+                                        Icon(Icons.Rounded.Album, null, tint = base, modifier = Modifier.size(96.dp))
+                                    }
+                                }
+                            }
+                        }
+                        else -> {
+                            // Большой полноразмерный частотный визуализатор + переключатель 6 режимов
+                            Column(
+                                Modifier.fillMaxSize().padding(vertical = 4.dp),
+                                verticalArrangement = Arrangement.spacedBy(10.dp),
+                            ) {
+                                FlatCard(
+                                    Modifier.weight(1f).fillMaxWidth(),
+                                    onClick = { vm.cycleVisualizer() },
+                                    padding = PaddingValues(14.dp),
+                                ) {
+                                    AudioVisualizer(
+                                        type = vizType,
+                                        playing = now.isPlaying,
+                                        modifier = Modifier.fillMaxSize(),
+                                        bands = 40,
+                                        large = true,
+                                        onBeat = { beat = it },
+                                    )
+                                }
+                                Row(
+                                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                ) {
+                                    VisualizerType.entries.forEach { vt ->
+                                        FlatChip(vt.title, vizType == vt, onClick = { vm.setVisualizer(vt) })
+                                    }
+                                }
                             }
                         }
                     }
                 }
             }
-        }
 
-        // ---- заголовок трека ----
-        Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-            Column(Modifier.weight(1f)) {
-                Text(
-                    now.title.ifBlank { "Ничего не играет" },
-                    style = MaterialTheme.typography.headlineSmall,
-                    color = c.text,
-                    maxLines = 1,
-                    modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE),
-                )
-                Spacer(Modifier.height(2.dp))
-                Text(
-                    if (now.isRadio) (now.streamTitle ?: now.artist) else now.artist,
-                    style = MaterialTheme.typography.bodyLarge,
-                    color = c.textDim,
-                    maxLines = 1,
-                    modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE),
-                )
-            }
-            val favSt = now.station
-            if (now.isRadio && favSt != null) {
-                val fav = favSt.id in favs
-                IconButton(onClick = { vm.toggleFav(favSt) }) {
-                    Icon(if (fav) Icons.Rounded.Star else Icons.Rounded.StarBorder, "Избранное", tint = if (fav) c.accent else c.textDim)
+            // ---- заголовок трека + «В плейлист» / Избранное ----
+            Row(Modifier.fillMaxWidth().padding(top = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        now.title.ifBlank { "Ничего не играет" },
+                        style = MaterialTheme.typography.headlineSmall,
+                        color = c.text,
+                        maxLines = 1,
+                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE),
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Text(
+                        if (now.isRadio) (now.streamTitle ?: now.artist) else now.artist,
+                        style = MaterialTheme.typography.bodyLarge,
+                        color = c.textDim,
+                        maxLines = 1,
+                        modifier = Modifier.basicMarquee(iterations = Int.MAX_VALUE),
+                    )
                 }
-            } else if (!now.isRadio && now.track?.format?.isNotBlank() == true) {
-                Text(
-                    now.track!!.format,
-                    style = MaterialTheme.typography.labelSmall,
-                    color = c.accent,
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(8.dp))
-                        .background(c.accentSoft)
-                        .padding(horizontal = 8.dp, vertical = 4.dp),
+                val favSt = now.station
+                if (now.isRadio && favSt != null) {
+                    val fav = favSt.id in favs
+                    IconButton(onClick = { vm.toggleFav(favSt) }) {
+                        Icon(if (fav) Icons.Rounded.Star else Icons.Rounded.StarBorder, "Избранное", tint = if (fav) c.accent else c.textDim)
+                    }
+                } else if (!now.isRadio && now.track != null) {
+                    IconButton(onClick = { showPlaylistAdd = true }) {
+                        Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, "В плейлист", tint = c.accent)
+                    }
+                }
+            }
+
+            // ---- компактный частотный визуализатор (в режимах Кассета и Обложка) ----
+            if (stage != 2) {
+                Spacer(Modifier.height(10.dp))
+                FlatCard(
+                    Modifier.fillMaxWidth(),
+                    onClick = { vm.cycleVisualizer() },
+                    padding = PaddingValues(horizontal = 10.dp, vertical = 7.dp),
+                ) {
+                    Box(Modifier.fillMaxWidth()) {
+                        AudioVisualizer(
+                            type = vizType,
+                            playing = now.isPlaying,
+                            modifier = Modifier.fillMaxWidth().height(38.dp),
+                            bands = 40,
+                            large = false,
+                            onBeat = { beat = it },
+                        )
+                        Text(
+                            vizType.title,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = c.textDim.copy(alpha = 0.75f),
+                            modifier = Modifier.align(Alignment.TopEnd),
+                        )
+                    }
+                }
+            }
+
+            Spacer(Modifier.height(6.dp))
+
+            // ---- прогресс или битрейт радио ----
+            if (now.isRadio) {
+                RadioBitrateRow(now)
+            } else {
+                val value = seeking ?: if (dur > 0) pos.toFloat() / dur else 0f
+                Slider(
+                    value = value.coerceIn(0f, 1f),
+                    onValueChange = { seeking = it },
+                    onValueChangeFinished = { seeking?.let { AudioEngine.seekTo((it * dur).toLong()) }; seeking = null },
+                    colors = SliderDefaults.colors(
+                        thumbColor = c.accent,
+                        activeTrackColor = c.accent,
+                        inactiveTrackColor = c.surface2,
+                    ),
+                )
+                Row(Modifier.fillMaxWidth()) {
+                    val curMs = (seeking?.let { (it * dur).toLong() }) ?: pos
+                    Text(fmtTime(curMs), style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace, color = c.textDim)
+                    Spacer(Modifier.weight(1f))
+                    Text(if (dur > 0) fmtTime(dur) else "0:00", style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace, color = c.textDim)
+                }
+            }
+
+            // ---- транспорт ----
+            Row(
+                Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                IconButton(onClick = { AudioEngine.toggleShuffle() }, enabled = !now.isRadio) {
+                    Icon(
+                        Icons.Rounded.Shuffle, "Перемешать",
+                        tint = if (now.shuffle && !now.isRadio) c.accent else c.textDim.copy(alpha = if (now.isRadio) 0.3f else 1f),
+                    )
+                }
+                IconButton(onClick = { AudioEngine.prev() }, enabled = !now.isRadio, modifier = Modifier.size(52.dp)) {
+                    Icon(
+                        Icons.Rounded.SkipPrevious, "Назад",
+                        tint = c.text.copy(alpha = if (now.isRadio) 0.25f else 1f),
+                        modifier = Modifier.size(34.dp),
+                    )
+                }
+                Box(contentAlignment = Alignment.Center) {
+                    FlatPlayButton(now.isPlaying, size = 70, onClick = { AudioEngine.toggle() })
+                    if (now.buffering) CircularProgressIndicator(Modifier.size(82.dp), strokeWidth = 2.dp, color = c.accent)
+                }
+                IconButton(onClick = { AudioEngine.next() }, enabled = !now.isRadio, modifier = Modifier.size(52.dp)) {
+                    Icon(
+                        Icons.Rounded.SkipNext, "Далее",
+                        tint = c.text.copy(alpha = if (now.isRadio) 0.25f else 1f),
+                        modifier = Modifier.size(34.dp),
+                    )
+                }
+                IconButton(onClick = { AudioEngine.cycleRepeat() }, enabled = !now.isRadio) {
+                    Icon(
+                        if (now.repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Повтор",
+                        tint = if (now.repeat != Player.REPEAT_MODE_OFF && !now.isRadio) c.accent else c.textDim.copy(alpha = if (now.isRadio) 0.3f else 1f),
+                    )
+                }
+            }
+
+            // ---- нижняя панель инструментов ----
+            val voiceActive = sound.voice.ordinal != 0 || sound.pitchSemis != 0f || sound.speed != 1f
+            val eqActive = sound.eqOn && (sound.gains.any { it != 0f } || sound.bass > 0f)
+            Row(
+                Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp),
+            ) {
+                ToolButton(
+                    icon = Icons.Rounded.RecordVoiceOver,
+                    label = if (sound.voice.ordinal != 0) sound.voice.title else "Голос",
+                    active = voiceActive,
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenVoice,
+                )
+                ToolButton(
+                    icon = Icons.Rounded.Equalizer,
+                    label = if (eqActive) sound.preset else "EQ",
+                    active = eqActive,
+                    modifier = Modifier.weight(1f),
+                    onClick = onOpenEq,
+                )
+                ToolButton(
+                    icon = Icons.Rounded.Bedtime,
+                    label = if (sleepAt > 0) "${((sleepAt - System.currentTimeMillis()) / 60000).coerceAtLeast(1)} м" else "Таймер",
+                    active = sleepAt > 0,
+                    modifier = Modifier.weight(1f),
+                    onClick = { showSleep = true },
+                )
+                ToolButton(
+                    icon = if (now.isRadio) Icons.Rounded.Tune else Icons.AutoMirrored.Rounded.QueueMusic,
+                    label = if (now.isRadio) "Станции" else "Очередь",
+                    active = false,
+                    modifier = Modifier.weight(1f),
+                    onClick = { if (now.isRadio) onClose() else showQueue = true },
                 )
             }
-        }
-
-        // ---- плоский спектр ----
-        Spacer(Modifier.height(12.dp))
-        FlatCard(
-            Modifier.fillMaxWidth(),
-            shape = RoundedCornerShape(12.dp),
-            padding = PaddingValues(horizontal = 10.dp, vertical = 8.dp),
-        ) {
-            SpectrumBars(now.isPlaying, Modifier.fillMaxWidth().height(34.dp), bands = 44, onBeat = { beat = it })
-        }
-
-        Spacer(Modifier.height(6.dp))
-
-        // ---- прогресс или битрейт радио ----
-        if (now.isRadio) {
-            RadioBitrateRow(now)
-        } else {
-            val value = seeking ?: if (dur > 0) pos.toFloat() / dur else 0f
-            Slider(
-                value = value.coerceIn(0f, 1f),
-                onValueChange = { seeking = it },
-                onValueChangeFinished = { seeking?.let { AudioEngine.seekTo((it * dur).toLong()) }; seeking = null },
-                colors = SliderDefaults.colors(
-                    thumbColor = c.accent,
-                    activeTrackColor = c.accent,
-                    inactiveTrackColor = c.surface2,
-                ),
-            )
-            Row(Modifier.fillMaxWidth()) {
-                val curMs = (seeking?.let { (it * dur).toLong() }) ?: pos
-                Text(fmtTime(curMs), style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace, color = c.textDim)
-                Spacer(Modifier.weight(1f))
-                Text(if (dur > 0) fmtTime(dur) else "0:00", style = MaterialTheme.typography.labelMedium, fontFamily = FontFamily.Monospace, color = c.textDim)
-            }
-        }
-
-        // ---- транспорт ----
-        Row(
-            Modifier.fillMaxWidth().padding(vertical = 10.dp),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
-        ) {
-            IconButton(onClick = { AudioEngine.toggleShuffle() }, enabled = !now.isRadio) {
-                Icon(
-                    Icons.Rounded.Shuffle, "Перемешать",
-                    tint = if (now.shuffle && !now.isRadio) c.accent else c.textDim.copy(alpha = if (now.isRadio) 0.3f else 1f),
-                )
-            }
-            IconButton(onClick = { AudioEngine.prev() }, enabled = !now.isRadio, modifier = Modifier.size(52.dp)) {
-                Icon(
-                    Icons.Rounded.SkipPrevious, "Назад",
-                    tint = c.text.copy(alpha = if (now.isRadio) 0.25f else 1f),
-                    modifier = Modifier.size(34.dp),
-                )
-            }
-            Box(contentAlignment = Alignment.Center) {
-                FlatPlayButton(now.isPlaying, size = 72, onClick = { AudioEngine.toggle() })
-                if (now.buffering) CircularProgressIndicator(Modifier.size(84.dp), strokeWidth = 2.dp, color = c.accent)
-            }
-            IconButton(onClick = { AudioEngine.next() }, enabled = !now.isRadio, modifier = Modifier.size(52.dp)) {
-                Icon(
-                    Icons.Rounded.SkipNext, "Далее",
-                    tint = c.text.copy(alpha = if (now.isRadio) 0.25f else 1f),
-                    modifier = Modifier.size(34.dp),
-                )
-            }
-            IconButton(onClick = { AudioEngine.cycleRepeat() }, enabled = !now.isRadio) {
-                Icon(
-                    if (now.repeat == Player.REPEAT_MODE_ONE) Icons.Rounded.RepeatOne else Icons.Rounded.Repeat, "Повтор",
-                    tint = if (now.repeat != Player.REPEAT_MODE_OFF && !now.isRadio) c.accent else c.textDim.copy(alpha = if (now.isRadio) 0.3f else 1f),
-                )
-            }
-        }
-
-        // ---- нижняя плоская панель инструментов ----
-        val voiceActive = sound.voice.ordinal != 0 || sound.pitchSemis != 0f || sound.speed != 1f
-        val eqActive = sound.eqOn && (sound.gains.any { it != 0f } || sound.bass > 0f)
-        Row(
-            Modifier.fillMaxWidth().padding(bottom = 12.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
-            ToolButton(
-                icon = Icons.Rounded.RecordVoiceOver,
-                label = if (sound.voice.ordinal != 0) sound.voice.title else "Голос",
-                active = voiceActive,
-                modifier = Modifier.weight(1f),
-                onClick = onOpenVoice,
-            )
-            ToolButton(
-                icon = Icons.Rounded.Equalizer,
-                label = if (eqActive) sound.preset else "EQ",
-                active = eqActive,
-                modifier = Modifier.weight(1f),
-                onClick = onOpenEq,
-            )
-            ToolButton(
-                icon = Icons.Rounded.Bedtime,
-                label = if (sleepAt > 0) "${((sleepAt - System.currentTimeMillis()) / 60000).coerceAtLeast(1)} м" else "Таймер",
-                active = sleepAt > 0,
-                modifier = Modifier.weight(1f),
-                onClick = { showSleep = true },
-            )
-            ToolButton(
-                icon = if (now.isRadio) Icons.Rounded.Tune else Icons.AutoMirrored.Rounded.QueueMusic,
-                label = if (now.isRadio) "Станции" else "Очередь",
-                active = false,
-                modifier = Modifier.weight(1f),
-                onClick = { if (now.isRadio) onClose() else showQueue = true },
-            )
         }
     }
 
     if (showQueue) {
-        ModalBottomSheet(onDismissRequest = { showQueue = false }, containerColor = c.surface) {
+        ModalBottomSheet(onDismissRequest = { showQueue = false }, containerColor = c.surfaceSolid) {
             QueueList()
         }
     }
     if (showSleep) SleepDialog(sleepAt) { showSleep = false }
+    if (showPlaylistAdd) {
+        now.track?.let { tr ->
+            AddToPlaylistSheet(vm = vm, track = tr, onDismiss = { showPlaylistAdd = false })
+        }
+    }
 }
 
 @Composable
@@ -484,12 +550,12 @@ private fun ToolButton(
     onClick: () -> Unit,
 ) {
     val c = LocalAura.current
-    val shape = RoundedCornerShape(12.dp)
+    val shape = RoundedCornerShape(c.controlRadius)
     Column(
         modifier
             .clip(shape)
             .background(if (active) c.accentSoft else c.surface)
-            .border(1.dp, if (active) c.accent else c.border, shape)
+            .border(c.borderWidth, if (active) c.accent else c.border, shape)
             .clickable(onClick = onClick)
             .padding(vertical = 8.dp, horizontal = 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
@@ -557,13 +623,13 @@ private fun QueueList() {
                 Row(
                     Modifier
                         .fillMaxWidth()
-                        .clip(RoundedCornerShape(12.dp))
+                        .clip(RoundedCornerShape(c.controlRadius))
                         .background(if (cur) c.accentSoft else Color.Transparent)
                         .clickable { AudioEngine.jumpTo(i) }
                         .padding(8.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    ArtThumb(t.uri, t.title, size = 42.dp, corner = 8.dp)
+                    ArtThumb(t.uri, t.title, size = 42.dp)
                     Column(Modifier.weight(1f).padding(start = 12.dp)) {
                         Text(t.title, color = if (cur) c.accent else c.text, style = MaterialTheme.typography.titleSmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
                         Text(t.artist, color = c.textDim, style = MaterialTheme.typography.bodySmall, maxLines = 1, overflow = TextOverflow.Ellipsis)
@@ -581,7 +647,7 @@ fun SleepDialog(sleepAt: Long, onDismiss: () -> Unit) {
     val c = LocalAura.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = c.surface,
+        containerColor = c.surfaceSolid,
         title = { Text("Таймер сна", color = c.text) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {

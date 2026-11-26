@@ -73,7 +73,7 @@ fun RadioScreen(vm: MainViewModel, onMenu: () -> Unit, bottomPadding: Int) {
 
     val stations = remember(country, favs, custom, savedOnline) { vm.stationsFor(country) }
 
-    Column(Modifier.fillMaxSize().background(c.bg)) {
+    Column(Modifier.fillMaxSize()) {
         FlatTopBar(
             title = "Онлайн-радио",
             subtitle = "5 стран · выбор битрейта",
@@ -199,7 +199,7 @@ fun RadioScreen(vm: MainViewModel, onMenu: () -> Unit, bottomPadding: Int) {
         var url by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { addDialog = false },
-            containerColor = c.surface,
+            containerColor = c.surfaceSolid,
             title = { Text("Своя станция", color = c.text) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -229,14 +229,14 @@ private fun StationCard(
     onRemove: (() -> Unit)?,
 ) {
     val c = LocalAura.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(c.cardRadius)
     Column(
         Modifier
             .fillMaxWidth()
             .padding(bottom = 10.dp)
             .clip(shape)
             .background(if (current) c.accentSoft else c.surface)
-            .border(1.dp, if (current) c.accent else c.border, shape)
+            .border(c.borderWidth, if (current) c.accent else c.border, shape)
             .clickable { if (current) AudioEngine.toggle() else AudioEngine.playStation(st) }
             .padding(12.dp),
     ) {

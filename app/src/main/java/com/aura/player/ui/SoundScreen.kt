@@ -49,6 +49,7 @@ import kotlin.math.roundToInt
 
 @Composable
 fun SoundScreen(
+    vm: MainViewModel,
     section: Int,
     onSectionChange: (Int) -> Unit,
     onMenu: () -> Unit,
@@ -57,8 +58,9 @@ fun SoundScreen(
     val c = LocalAura.current
     val s by AudioEngine.sound.collectAsState()
     val now by AudioEngine.now.collectAsState()
+    val uiSettings by vm.settings.collectAsState()
 
-    Column(Modifier.fillMaxSize().background(c.bg)) {
+    Column(Modifier.fillMaxSize()) {
         FlatTopBar(
             title = "Звук",
             subtitle = if (section == 0) "Эффекты голоса · ${s.voice.title}" else "10-полосный EQ · ${s.preset}",
@@ -86,10 +88,19 @@ fun SoundScreen(
             item {
                 FlatCard(
                     Modifier.fillMaxWidth().padding(bottom = 14.dp),
-                    shape = RoundedCornerShape(14.dp),
+                    onClick = { vm.cycleVisualizer() },
                     padding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                 ) {
-                    SpectrumBars(now.isPlaying, Modifier.fillMaxWidth().height(46.dp), bands = 32, mirrored = false)
+                    Box(Modifier.fillMaxWidth()) {
+                        AudioVisualizer(uiSettings.visualizer, now.isPlaying, Modifier.fillMaxWidth().height(48.dp), bands = 32, large = false)
+                        Text(
+                            uiSettings.visualizer.title,
+                            fontSize = 9.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = c.textDim,
+                            modifier = Modifier.align(Alignment.TopEnd),
+                        )
+                    }
                 }
             }
 
@@ -222,12 +233,12 @@ fun SoundScreen(
 @Composable
 private fun VoiceTile(v: VoiceEffect, selected: Boolean, modifier: Modifier, onClick: () -> Unit) {
     val c = LocalAura.current
-    val shape = RoundedCornerShape(14.dp)
+    val shape = RoundedCornerShape(c.cardRadius)
     Column(
         modifier
             .clip(shape)
             .background(if (selected) c.accent else c.surface)
-            .border(1.dp, if (selected) c.accent else c.border, shape)
+            .border(c.borderWidth, if (selected) c.accent else c.border, shape)
             .clickable(onClick = onClick)
             .padding(vertical = 12.dp, horizontal = 6.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
