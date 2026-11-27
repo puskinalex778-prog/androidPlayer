@@ -4,8 +4,11 @@ import android.app.Application
 import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.aura.player.data.BookmarkStore
 import com.aura.player.data.CustomTheme
 import com.aura.player.data.Library
+import com.aura.player.data.LyricsStore
+import com.aura.player.data.PlayerDockAction
 import com.aura.player.data.Playlist
 import com.aura.player.data.RadioBrowser
 import com.aura.player.data.RadioCatalog
@@ -14,6 +17,7 @@ import com.aura.player.data.SafListing
 import com.aura.player.data.Station
 import com.aura.player.data.StreamOption
 import com.aura.player.data.Track
+import com.aura.player.data.TrackBookmark
 import com.aura.player.playback.AudioEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -32,6 +36,9 @@ data class UiSettings(
     val adaptive: Boolean = false,
     val playerStage: Int = 0, // 0 = Кассета, 1 = Обложка, 2 = Визуал
     val quality: Int = 1,
+    val dockActions: List<PlayerDockAction> = PlayerDockAction.defaultDock,
+    val shakeSensitivity: Int = 0,
+    val autoCrossfade: Boolean = false,
 )
 
 data class DeviceFolder(
@@ -57,6 +64,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     // ---------- медиатека (только добавленные пользователем треки; файлы не копируются) ----------
     val tracks = MutableStateFlow<List<Track>>(emptyList())
     val playlists = MutableStateFlow<List<Playlist>>(Library.loadPlaylists(ctx))
+    val bookmarks = MutableStateFlow<List<TrackBookmark>>(BookmarkStore.load(ctx))
     val favoriteTracks = MutableStateFlow(prefs.favoriteTracks)
     val customThemes = MutableStateFlow(prefs.customThemes)
     val previewCustomTheme = MutableStateFlow<CustomTheme?>(null)
@@ -86,6 +94,9 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             adaptive = prefs.adaptiveColor,
             playerStage = prefs.playerStage.coerceIn(0, 2),
             quality = prefs.quality,
+            dockActions = PlayerDockAction.parseList(prefs.playerDockActions),
+            shakeSensitivity = prefs.shakeSensitivity.coerceIn(0, 3),
+            autoCrossfade = prefs.autoCrossfade,
         )
     )
 
@@ -493,6 +504,76 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val s = stage.coerceIn(0, 2)
         prefs.playerStage = s
         settings.update { it.copy(playerStage = s) }
+    }
+
+    fun setDockActions(list: List<PlayerDockAction>) {
+        val valid = list.distinct().take(5)
+        if (valid.size < 2) return
+        prefs.playerDockActions = valid.joinToString(",") { it.name }
+        settings.update { it.copy(dockActions = valid) }
+    }
+
+    fun setShakeSensitivity(level: Int) {
+        val v = level.coerceIn(0, 3)
+        prefs.shakeSensitivity = v
+        settings.update { it.copy(shakeSensitivity = v) }
+    }
+
+    fun setAutoCrossfade(on: Boolean) {
+        AudioEngine.setAutoCrossfade(on)
+        settings.update { it.copy(autoCrossfade = on) }
+    }
+
+    // ===================== Тексты песен, закладки, редактирование тегов =====================
+
+    fun loadLyrics(uri: String): String =
+        LyricsStore.load(ctx, uri) ?: LyricsStore.readEmbedded(ctx, uri) ?: ""
+
+    fun saveLyrics(uri: String, text: String) {
+        LyricsStore.save(ctx, uri, text)
+        toast.value = if (text.isBlank()) "Текст удалён" else "Текст сохранён"
+    }
+
+    fun addBookmark(trackUri: String, positionMs: Long, label: String) {
+        val clean = label.trim().ifBlank { "Метка ${fmtTime(positionMs)}" }
+        val bm = TrackBookmark("bm_" + System.currentTimeMillis(), trackUri, positionMs.coerceAtLeast(0L), clean)
+        val next = bookmarks.value + bm
+        bookmarks.value = next
+        BookmarkStore.save(ctx, next)
+        toast.value = "Закладка «$clean» добавлена"
+    }
+
+    fun deleteBookmark(id: String) {
+        val next = bookmarks.value.filterNot { it.id == id }
+        bookmarks.value = next
+        BookmarkStore.save(ctx, next)
+    }
+
+    fun editTrackMeta(uri: String, newTitle: String, newArtist: String) {
+        val cleanTitle = newTitle.trim()
+        val cleanArtist = newArtist.trim().ifBlank { Library.UNKNOWN_ARTIST }
+        if (cleanTitle.isBlank()) return
+        userTracks = userTracks.map { t ->
+            if (t.uri == uri) t.copy(title = cleanTitle, artist = cleanArtist) else t
+        }
+        Library.saveUser(ctx, userTracks)
+        publish()
+        toast.value = "Название обновлено"
+    }
+
+    fun playFromStat(statId: String) {
+        if (statId.startsWith("radio:")) {
+            val stId = statId.removePrefix("radio:")
+            val st = allKnown().firstOrNull { it.id == stId }
+            if (st != null) AudioEngine.playStation(st)
+            else toast.value = "Станция не найдена"
+        } else if (statId.startsWith("local:")) {
+            val uri = statId.removePrefix("local:")
+            val list = tracks.value
+            val t = list.firstOrNull { it.uri == uri }
+            if (t != null) play(list, t)
+            else toast.value = "Трек убран из списка"
+        }
     }
     fun setQuality(q: Int) { prefs.quality = q; settings.update { it.copy(quality = q) } }
 

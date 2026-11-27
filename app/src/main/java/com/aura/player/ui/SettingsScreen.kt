@@ -27,12 +27,14 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.VolumeUp
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.BatteryChargingFull
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.DeleteOutline
 import androidx.compose.material.icons.rounded.DeleteSweep
+import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Palette
 import androidx.compose.material.icons.rounded.SdCard
@@ -82,6 +84,9 @@ fun SettingsScreen(
     onSectionChange: (Int) -> Unit,
     onMenu: () -> Unit,
     bottomPadding: Int,
+    onOpenDockCustomizer: () -> Unit = {},
+    onOpenCarMode: () -> Unit = {},
+    onOpenStats: () -> Unit = {},
 ) {
     val c = LocalAura.current
     val ctx = LocalContext.current
@@ -89,6 +94,7 @@ fun SettingsScreen(
     val customThemes by vm.customThemes.collectAsState()
     val tracks by vm.tracks.collectAsState()
     val sleepAt by AudioEngine.sleepAt.collectAsState()
+    val sleepAfterTrack by AudioEngine.sleepAfterTrack.collectAsState()
     var sleepDialog by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var editingTheme by remember { mutableStateOf<CustomTheme?>(null) }
@@ -220,7 +226,7 @@ fun SettingsScreen(
                 }
                 // ===================== ВИЗУАЛИЗАЦИЯ =====================
                 item {
-                    SectionHeader("Визуализация частот (8 режимов)")
+                    SectionHeader("Визуализация частот (${VisualizerType.entries.size} режимов)")
                     Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         VisualizerType.entries.forEach { vt ->
                             FlatChip(vt.title, s.visualizer == vt, onClick = { vm.setVisualizer(vt) })
@@ -254,8 +260,29 @@ fun SettingsScreen(
                             SettingRow(
                                 icon = Icons.Rounded.Bedtime,
                                 title = "Таймер сна",
-                                sub = if (sleepAt > 0) "Активен · плавное выключение" else "Выключен",
+                                sub = when {
+                                    sleepAfterTrack -> "В конце текущего трека"
+                                    sleepAt > 0 -> "Активен · плавное выключение"
+                                    else -> "Выключен"
+                                },
                             ) { sleepDialog = true }
+                            HorizontalDivider(color = c.border)
+                            ToggleRow(
+                                title = "Плавные переходы (Crossfade)",
+                                sub = "Затухание и плавный вход при смене трека",
+                                value = s.autoCrossfade,
+                            ) { vm.setAutoCrossfade(it) }
+                            HorizontalDivider(color = c.border)
+                            Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                                Text("Встряхивание для переключения трека", style = MaterialTheme.typography.titleSmall, color = c.text)
+                                Text("Потрясите телефон, чтобы переключить следующий трек", style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                                Spacer(Modifier.height(8.dp))
+                                FlatSegmentedControl(
+                                    options = listOf("Выкл", "Низк.", "Сред.", "Выс."),
+                                    selectedIndex = s.shakeSensitivity.coerceIn(0, 3),
+                                    onSelect = { vm.setShakeSensitivity(it) },
+                                )
+                            }
                             HorizontalDivider(color = c.border)
                             SettingRow(
                                 icon = Icons.Rounded.BatteryChargingFull,
@@ -277,6 +304,33 @@ fun SettingsScreen(
                             ) {
                                 runCatching { ctx.startActivity(Intent(Settings.ACTION_SOUND_SETTINGS).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
                             }
+                        }
+                    }
+                }
+                item {
+                    SectionHeader("Плеер и инструменты")
+                    FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(0.dp)) {
+                        Column {
+                            SettingRow(
+                                icon = Icons.Rounded.Tune,
+                                title = "Нижняя панель плеера",
+                                sub = s.dockActions.joinToString(" · ") { it.title },
+                                onClick = onOpenDockCustomizer,
+                            )
+                            HorizontalDivider(color = c.border)
+                            SettingRow(
+                                icon = Icons.Rounded.DirectionsCar,
+                                title = "Режим Авто",
+                                sub = "Крупные кнопки и не гаснущий экран в дороге",
+                                onClick = onOpenCarMode,
+                            )
+                            HorizontalDivider(color = c.border)
+                            SettingRow(
+                                icon = Icons.Rounded.BarChart,
+                                title = "Статистика прослушиваний",
+                                sub = "Топ любимых треков и время прослушивания",
+                                onClick = onOpenStats,
+                            )
                         }
                     }
                 }
@@ -311,7 +365,7 @@ fun SettingsScreen(
                 }
                 item {
                     Text(
-                        "PoliSANPlayer 1.5 · 2026\nKotlin · Jetpack Compose · Media3 · 32-bit DSP",
+                        "PoliSANPlayer V1.6 · 2026\nKotlin · Jetpack Compose · Media3 · 32-bit DSP",
                         style = MaterialTheme.typography.bodySmall,
                         color = c.textDim,
                         textAlign = TextAlign.Center,

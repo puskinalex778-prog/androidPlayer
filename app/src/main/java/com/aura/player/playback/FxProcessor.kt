@@ -28,7 +28,7 @@ import kotlin.math.tanh
 @UnstableApi
 class FxProcessor : BaseAudioProcessor() {
 
-    enum class Mode { NONE, ROBOT, ECHO, HALL, DISTORT, TELEPHONE, UNDERWATER, DEMON, VINYL, KARAOKE }
+    enum class Mode { NONE, ROBOT, ECHO, HALL, DISTORT, TELEPHONE, UNDERWATER, DEMON, VINYL, KARAOKE, AUDIO_8D }
 
     // ---------- параметры ----------
     @Volatile var mode: Mode = Mode.NONE
@@ -95,6 +95,7 @@ class FxProcessor : BaseAudioProcessor() {
     private val hpLp = FloatArray(8)
     private var phase = 0.0
     private var lfo = 0.0
+    private var panPhase = 0.0
     private var crackle = 0f
     private var rnd = 22222
     private var rmsEnv = 0.2f
@@ -267,6 +268,7 @@ class FxProcessor : BaseAudioProcessor() {
         val demonLen = (0.16f * sr).toInt()
         val ringInc = 2.0 * PI * 70.0 / sr
         val lfoInc = 2.0 * PI * 0.5 / sr
+        val panInc = 2.0 * PI * 0.16 / sr
         val aTel1 = coefLp(450f)
         val aTel2 = coefLp(3200f)
         val aSoft = coefLp(5000f)
@@ -294,6 +296,17 @@ class FxProcessor : BaseAudioProcessor() {
                 val side = (l - r) * 0.5f
                 frame[0] = side * 1.4f + lpA[0]
                 frame[1] = -side * 1.4f + lpA[0]
+            } else if (m == Mode.AUDIO_8D) {
+                if (stereo) {
+                    val l = frame[0] * 0.78f + reverb(0, frame[0]) * 0.34f
+                    val r = frame[1] * 0.78f + reverb(1, frame[1]) * 0.34f
+                    val pan = 0.5f + 0.45f * sin(panPhase).toFloat()
+                    val angle = pan * (PI / 2.0)
+                    frame[0] = l * cos(angle).toFloat() * 1.35f
+                    frame[1] = r * sin(angle).toFloat() * 1.35f
+                } else {
+                    for (c in 0 until ch) frame[c] = frame[c] * 0.78f + reverb(c, frame[c]) * 0.34f
+                }
             } else if (m != Mode.NONE && m != Mode.KARAOKE) {
                 if (m == Mode.VINYL) {
                     if (crackle > 0.001f) crackle *= 0.93f
@@ -420,6 +433,8 @@ class FxProcessor : BaseAudioProcessor() {
             if (phase > 2 * PI) phase -= 2 * PI
             lfo += lfoInc
             if (lfo > 2 * PI) lfo -= 2 * PI
+            panPhase += panInc
+            if (panPhase > 2 * PI) panPhase -= 2 * PI
         }
         out.flip()
         lastWriteNs = System.nanoTime()

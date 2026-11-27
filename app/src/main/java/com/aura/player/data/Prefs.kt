@@ -30,6 +30,8 @@ class Prefs(context: Context) {
     var adaptiveColor: Boolean get() = sp.getBoolean("adaptive_v2", false); set(v) = put("adaptive_v2", v)
     var playerStage: Int get() = sp.getInt("stage", if (sp.getBoolean("cassette", true)) 0 else 1); set(v) = put("stage", v)
     var amoled: Boolean get() = sp.getBoolean("amoled", false); set(v) = put("amoled", v)
+    var playerDockActions: String get() = str("playerDockActions", "VOICE,EQ,TIMER,OUTPUT"); set(v) = put("playerDockActions", v)
+    var shakeSensitivity: Int get() = sp.getInt("shakeSens", 0); set(v) = put("shakeSens", v)
 
     var customThemes: List<CustomTheme>
         get() = try {
@@ -72,6 +74,7 @@ class Prefs(context: Context) {
     var mono: Boolean get() = sp.getBoolean("mono", false); set(v) = put("mono", v)
     var normalize: Boolean get() = sp.getBoolean("normalize", false); set(v) = put("normalize", v)
     var smoothFade: Boolean get() = sp.getBoolean("smoothFade", true); set(v) = put("smoothFade", v)
+    var autoCrossfade: Boolean get() = sp.getBoolean("autoCrossfade", false); set(v) = put("autoCrossfade", v)
     var outputMode: Int get() = sp.getInt("outputMode", 0); set(v) = put("outputMode", v)
     var forceSpeakerCallMode: Boolean get() = sp.getBoolean("forceSpeakerCall", false); set(v) = put("forceSpeakerCall", v)
     var audioQuality: Int get() = sp.getInt("audioQuality", 0); set(v) = put("audioQuality", v)

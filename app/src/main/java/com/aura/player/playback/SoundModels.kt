@@ -1,7 +1,13 @@
 package com.aura.player.playback
 
 /** Эффекты голоса: высота тона (через Sonic в ExoPlayer) + тембровая обработка (FxProcessor). */
-enum class VoiceEffect(val title: String, val emoji: String, val pitch: Float, val mode: FxProcessor.Mode) {
+enum class VoiceEffect(
+    val title: String,
+    val emoji: String,
+    val pitch: Float,
+    val mode: FxProcessor.Mode,
+    val speed: Float = 1f,
+) {
     NORMAL("Обычный", "🎵", 1f, FxProcessor.Mode.NONE),
     CHILD("Детский", "👶", 1.35f, FxProcessor.Mode.NONE),
     HELIUM("Гелий", "🎈", 1.8f, FxProcessor.Mode.NONE),
@@ -16,6 +22,9 @@ enum class VoiceEffect(val title: String, val emoji: String, val pitch: Float, v
     UNDERWATER("Под водой", "🌊", 0.95f, FxProcessor.Mode.UNDERWATER),
     VINYL("Винил", "💿", 1f, FxProcessor.Mode.VINYL),
     KARAOKE("Караоке", "🎤", 1f, FxProcessor.Mode.KARAOKE),
+    AUDIO_8D("8D Звук", "🎧", 1f, FxProcessor.Mode.AUDIO_8D, 1f),
+    SLOWED_REVERB("Slowed+Reverb", "🌙", 0.88f, FxProcessor.Mode.HALL, 0.85f),
+    NIGHTCORE("Nightcore", "⚡", 1.22f, FxProcessor.Mode.NONE, 1.25f),
 }
 
 /** Пресеты эквалайзера: 10 полос 31 Гц … 16 кГц, усиление в дБ */

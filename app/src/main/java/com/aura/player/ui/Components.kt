@@ -30,14 +30,17 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AccountBalance
 import androidx.compose.material.icons.rounded.Air
 import androidx.compose.material.icons.rounded.Album
+import androidx.compose.material.icons.rounded.Bolt
 import androidx.compose.material.icons.rounded.Call
 import androidx.compose.material.icons.rounded.ChildCare
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.Headphones
 import androidx.compose.material.icons.rounded.Landscape
 import androidx.compose.material.icons.rounded.LocalFireDepartment
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.MicOff
 import androidx.compose.material.icons.rounded.MusicNote
+import androidx.compose.material.icons.rounded.NightsStay
 import androidx.compose.material.icons.rounded.Pets
 import androidx.compose.material.icons.rounded.Radio
 import androidx.compose.material.icons.rounded.Search
@@ -235,21 +238,23 @@ fun FlatSegmentedControl(
                     .background(if (sel) activeBg else Color.Transparent)
                     .then(if (sel && c.style != UiStyle.RETRO) Modifier.border(c.borderWidth, c.border, itemShape) else Modifier)
                     .clickable { onSelect(i) }
-                    .padding(vertical = 8.dp, horizontal = 6.dp),
+                    .padding(vertical = 8.dp, horizontal = 3.dp),
                 horizontalArrangement = Arrangement.Center,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 val ic = icons?.getOrNull(i)
                 if (ic != null) {
-                    Icon(ic, null, tint = if (sel) activeIcon else c.textDim, modifier = Modifier.size(15.dp))
-                    Spacer(Modifier.width(5.dp))
+                    Icon(ic, null, tint = if (sel) activeIcon else c.textDim, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
                 }
                 Text(
                     label,
-                    style = MaterialTheme.typography.labelLarge,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
                     fontFamily = if (c.style == UiStyle.RETRO) FontFamily.Monospace else FontFamily.Default,
                     color = if (sel) activeText else c.textDim,
                     maxLines = 1,
+                    softWrap = false,
                     overflow = TextOverflow.Ellipsis,
                 )
             }
@@ -490,6 +495,9 @@ fun voiceIcon(v: VoiceEffect): ImageVector = when (v) {
     VoiceEffect.UNDERWATER -> Icons.Rounded.Water
     VoiceEffect.VINYL -> Icons.Rounded.Album
     VoiceEffect.KARAOKE -> Icons.Rounded.MicOff
+    VoiceEffect.AUDIO_8D -> Icons.Rounded.Headphones
+    VoiceEffect.SLOWED_REVERB -> Icons.Rounded.NightsStay
+    VoiceEffect.NIGHTCORE -> Icons.Rounded.Bolt
 }
 
 fun fmtTime(ms: Long): String {

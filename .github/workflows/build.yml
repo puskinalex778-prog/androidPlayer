@@ -41,7 +41,7 @@ jobs:
       - name: Prepare named APK
         run: |
           VER=$(grep -oP 'versionName\s*=\s*"\K[^"]+' app/build.gradle.kts | head -n 1)
-          APK_NAME="PoliSANPlayer-v${VER:-1.0}.apk"
+          APK_NAME="PoliSANPlayer-V${VER:-1.6}.apk"
           mkdir -p dist
           cp app/build/outputs/apk/debug/*.apk "dist/${APK_NAME}"
           echo "APK_NAME=${APK_NAME}" >> "$GITHUB_ENV"

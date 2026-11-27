@@ -2,8 +2,13 @@ package com.aura.player.ui
 
 import android.Manifest
 import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.hardware.Sensor
+import android.hardware.SensorEvent
+import android.hardware.SensorEventListener
+import android.hardware.SensorManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
@@ -47,8 +52,10 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.QueueMusic
 import androidx.compose.material.icons.rounded.Add
+import androidx.compose.material.icons.rounded.BarChart
 import androidx.compose.material.icons.rounded.Bedtime
 import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Equalizer
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.Palette
@@ -100,6 +107,7 @@ import com.aura.player.playback.AudioEngine
 import com.aura.player.playback.PlaybackService
 import com.google.common.util.concurrent.ListenableFuture
 import kotlinx.coroutines.launch
+import kotlin.math.sqrt
 
 class MainActivity : ComponentActivity() {
 
@@ -108,6 +116,50 @@ class MainActivity : ComponentActivity() {
     private var openPickerSignal = mutableStateOf<Int?>(null) // 0 = Файлы, 1 = Папки
     private var pendingPickerMode = 0
     private var pendingPlaylistId: String? = null
+
+    private var sensorManager: SensorManager? = null
+    private var shakeRegistered = false
+    private var isActivityResumed = false
+    private var lastShakeMs = 0L
+
+    private val shakeListener = object : SensorEventListener {
+        override fun onAccuracyChanged(sensor: Sensor?, accuracy: Int) = Unit
+
+        override fun onSensorChanged(event: SensorEvent) {
+            val sens = vm.settings.value.shakeSensitivity
+            val threshold = when (sens) {
+                1 -> 2.9f
+                2 -> 2.3f
+                3 -> 1.85f
+                else -> return
+            }
+            val x = event.values[0]
+            val y = event.values[1]
+            val z = event.values[2]
+            val g = sqrt(x * x + y * y + z * z) / SensorManager.GRAVITY_EARTH
+            val nowState = AudioEngine.now.value
+            val nowMs = System.currentTimeMillis()
+            if (g > threshold && nowState.isPlaying && !nowState.isRadio && nowMs - lastShakeMs > 1300L) {
+                lastShakeMs = nowMs
+                AudioEngine.next()
+                Toast.makeText(this@MainActivity, "Следующий трек", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    private fun syncShakeSensor() {
+        if (shakeRegistered) {
+            sensorManager?.unregisterListener(shakeListener)
+            shakeRegistered = false
+        }
+        if (isActivityResumed && vm.settings.value.shakeSensitivity > 0) {
+            val sm = sensorManager ?: (getSystemService(Context.SENSOR_SERVICE) as? SensorManager).also { sensorManager = it }
+            val acc = sm?.getDefaultSensor(Sensor.TYPE_ACCELEROMETER)
+            if (sm != null && acc != null) {
+                shakeRegistered = sm.registerListener(shakeListener, acc, SensorManager.SENSOR_DELAY_UI)
+            }
+        }
+    }
 
     private val audioPermission: String
         get() = if (Build.VERSION.SDK_INT >= 33) Manifest.permission.READ_MEDIA_AUDIO else Manifest.permission.READ_EXTERNAL_STORAGE
@@ -162,6 +214,8 @@ class MainActivity : ComponentActivity() {
             val activeCustom = previewCustom ?: customThemes.firstOrNull { it.id == settings.activeCustomThemeId }
             val accentInt by AudioEngine.accent.collectAsState()
             val adaptive = if (settings.adaptive && activeCustom == null && settings.theme != AuraTheme.MONO) accentInt?.let { Color(it) } else null
+
+            LaunchedEffect(settings.shakeSensitivity) { syncShakeSensor() }
 
             AuraAppTheme(settings.theme, activeCustom, settings.style, settings.darkMode, settings.amoled, adaptive) { dark ->
                 val view = LocalView.current
@@ -228,6 +282,18 @@ class MainActivity : ComponentActivity() {
         controllerFuture = MediaController.Builder(this, token).buildAsync()
     }
 
+    override fun onResume() {
+        super.onResume()
+        isActivityResumed = true
+        syncShakeSensor()
+    }
+
+    override fun onPause() {
+        isActivityResumed = false
+        syncShakeSensor()
+        super.onPause()
+    }
+
     override fun onStop() {
         controllerFuture?.let { MediaController.releaseFuture(it) }
         controllerFuture = null
@@ -262,6 +328,9 @@ private fun AppRoot(
     var full by rememberSaveable { mutableStateOf(false) }
     var pickerMode by remember { mutableStateOf<Int?>(null) }
     var showSleep by remember { mutableStateOf(false) }
+    var showDockCustomizer by remember { mutableStateOf(false) }
+    var showStats by remember { mutableStateOf(false) }
+    var showCarMode by rememberSaveable { mutableStateOf(false) }
 
     val now by AudioEngine.now.collectAsState()
     val sound by AudioEngine.sound.collectAsState()
@@ -271,6 +340,7 @@ private fun AppRoot(
     val playlists by vm.playlists.collectAsState()
     val safState by vm.safBrowser.collectAsState()
     val sleepAt by AudioEngine.sleepAt.collectAsState()
+    val sleepAfterTrack by AudioEngine.sleepAfterTrack.collectAsState()
     val error by AudioEngine.error.collectAsState()
     val toast by vm.toast.collectAsState()
 
@@ -283,15 +353,16 @@ private fun AppRoot(
     LaunchedEffect(toast) { toast?.let { Toast.makeText(ctx, it, Toast.LENGTH_SHORT).show(); vm.toast.value = null } }
     LaunchedEffect(error) { error?.let { Toast.makeText(ctx, it, Toast.LENGTH_LONG).show() } }
 
-    BackHandler(full) { full = false }
-    BackHandler(!full && drawerState.isOpen) { scope.launch { drawerState.close() } }
+    BackHandler(!full && !showCarMode && drawerState.isOpen) { scope.launch { drawerState.close() } }
+    BackHandler(full && !showCarMode) { full = false }
+    BackHandler(showCarMode) { showCarMode = false }
 
     val openMenu: () -> Unit = { scope.launch { drawerState.open() } }
     val closeMenu: () -> Unit = { scope.launch { drawerState.close() } }
 
     ModalNavigationDrawer(
         drawerState = drawerState,
-        gesturesEnabled = !full,
+        gesturesEnabled = !full && !showCarMode,
         drawerContent = {
             FlatDrawerMenu(
                 tab = tab,
@@ -304,7 +375,8 @@ private fun AppRoot(
                 eqLabel = if (sound.eqOn && sound.preset != "Ровно") sound.preset else null,
                 outputLabel = output.activeLabel,
                 styleLabel = settings.style.title,
-                sleepActive = sleepAt > 0,
+                sleepActive = sleepAt > 0 || sleepAfterTrack,
+                dockCount = settings.dockActions.size,
                 nowTitle = if (now.hasMedia) now.title else null,
                 onNavigate = { t, sub, lt ->
                     tab = t
@@ -316,6 +388,9 @@ private fun AppRoot(
                 onAddFiles = { closeMenu(); onAddFiles(null) },
                 onAddFolder = { closeMenu(); onAddFolder(null) },
                 onDevicePicker = { closeMenu(); onRequestDevicePicker() },
+                onDockCustomizer = { closeMenu(); showDockCustomizer = true },
+                onCarMode = { closeMenu(); showCarMode = true },
+                onStats = { closeMenu(); showStats = true },
                 onSleep = { closeMenu(); showSleep = true },
                 onOpenPlayer = { if (now.hasMedia) { closeMenu(); full = true } },
             )
@@ -352,6 +427,9 @@ private fun AppRoot(
                             onSectionChange = { settingsSection = it },
                             onMenu = openMenu,
                             bottomPadding = bottomSpace,
+                            onOpenDockCustomizer = { showDockCustomizer = true },
+                            onOpenCarMode = { showCarMode = true },
+                            onOpenStats = { showStats = true },
                         )
                     }
                 }
@@ -380,7 +458,19 @@ private fun AppRoot(
                     onClose = { full = false },
                     onOpenVoice = { full = false; tab = Tab.SOUND; soundSection = 0 },
                     onOpenEq = { full = false; tab = Tab.SOUND; soundSection = 1 },
+                    onOpenRadio = { full = false; tab = Tab.RADIO },
+                    onOpenPlaylists = { full = false; tab = Tab.LIBRARY; libTab = LibTab.PLAYLISTS },
+                    onOpenCarMode = { showCarMode = true },
+                    onCustomizeDock = { showDockCustomizer = true },
                 )
+            }
+
+            AnimatedVisibility(
+                showCarMode,
+                enter = slideInVertically(tween(260)) { it } + fadeIn(),
+                exit = slideOutVertically(tween(200)) { it } + fadeOut(),
+            ) {
+                CarModeOverlay(vm = vm, onClose = { showCarMode = false })
             }
         }
     }
@@ -399,6 +489,12 @@ private fun AppRoot(
     if (showSleep) {
         SleepDialog(sleepAt) { showSleep = false }
     }
+    if (showDockCustomizer) {
+        DockCustomizerSheet(vm = vm, onDismiss = { showDockCustomizer = false })
+    }
+    if (showStats) {
+        StatsSheet(vm = vm, onDismiss = { showStats = false })
+    }
 }
 
 // ===================== Боковое меню =====================
@@ -416,11 +512,15 @@ private fun FlatDrawerMenu(
     outputLabel: String,
     styleLabel: String,
     sleepActive: Boolean,
+    dockCount: Int,
     nowTitle: String?,
     onNavigate: (Tab, Int, LibTab?) -> Unit,
     onAddFiles: () -> Unit,
     onAddFolder: () -> Unit,
     onDevicePicker: () -> Unit,
+    onDockCustomizer: () -> Unit,
+    onCarMode: () -> Unit,
+    onStats: () -> Unit,
     onSleep: () -> Unit,
     onOpenPlayer: () -> Unit,
 ) {
@@ -541,6 +641,25 @@ private fun FlatDrawerMenu(
                 Spacer(Modifier.height(14.dp))
                 DrawerLabel("ИНСТРУМЕНТЫ")
 
+                DrawerItem(
+                    icon = Icons.Rounded.Tune,
+                    title = "Нижняя панель плеера",
+                    badge = "$dockCount кн.",
+                    selected = false,
+                    onClick = onDockCustomizer,
+                )
+                DrawerItem(
+                    icon = Icons.Rounded.DirectionsCar,
+                    title = "Режим Авто",
+                    selected = false,
+                    onClick = onCarMode,
+                )
+                DrawerItem(
+                    icon = Icons.Rounded.BarChart,
+                    title = "Статистика",
+                    selected = false,
+                    onClick = onStats,
+                )
                 DrawerItem(
                     icon = Icons.Rounded.Bedtime,
                     title = "Таймер сна",

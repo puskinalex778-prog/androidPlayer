@@ -38,6 +38,7 @@ import androidx.compose.material.icons.rounded.FavoriteBorder
 import androidx.compose.material.icons.rounded.Folder
 import androidx.compose.material.icons.rounded.FolderOpen
 import androidx.compose.material.icons.rounded.GraphicEq
+import androidx.compose.material.icons.rounded.Info
 import androidx.compose.material.icons.rounded.LibraryMusic
 import androidx.compose.material.icons.rounded.MoreVert
 import androidx.compose.material.icons.rounded.MusicNote
@@ -122,6 +123,8 @@ fun LibraryScreen(
     var renamePl by remember { mutableStateOf<Playlist?>(null) }
     var addTrackToPl by remember { mutableStateOf<Track?>(null) }
     var pickExistingForPl by remember { mutableStateOf<Playlist?>(null) }
+    var renameTrack by remember { mutableStateOf<Track?>(null) }
+    var infoTrack by remember { mutableStateOf<Track?>(null) }
 
     val openPlaylist = remember(playlists, openPlaylistId) { playlists.firstOrNull { it.id == openPlaylistId } }
     val sdCount = remember(tracks) { tracks.count { it.onSdCard } }
@@ -267,6 +270,8 @@ fun LibraryScreen(
                             onToggleLike = { vm.toggleFavoriteTrack(t.uri) },
                             onClick = { vm.play(plTracks, t) },
                             onAddToPlaylist = { addTrackToPl = t },
+                            onRename = { renameTrack = t },
+                            onInfo = { infoTrack = t },
                             removeLabel = "Убрать из плейлиста",
                             onRemove = { vm.removeTrackFromPlaylist(openPlaylist.id, t.uri) },
                         )
@@ -413,6 +418,8 @@ fun LibraryScreen(
                             onToggleLike = { vm.toggleFavoriteTrack(t.uri) },
                             onClick = { vm.play(shown, t) },
                             onAddToPlaylist = { addTrackToPl = t },
+                            onRename = { renameTrack = t },
+                            onInfo = { infoTrack = t },
                             onRemove = { vm.remove(t) },
                         )
                         HorizontalDivider(thickness = 1.dp, color = c.border.copy(alpha = 0.55f))
@@ -460,6 +467,25 @@ fun LibraryScreen(
             vm = vm,
             playlist = pl,
             onDismiss = { pickExistingForPl = null },
+        )
+    }
+
+    renameTrack?.let { tr ->
+        RenameTrackDialog(
+            track = tr,
+            onDismiss = { renameTrack = null },
+            onSave = { title, artist ->
+                vm.editTrackMeta(tr.uri, title, artist)
+                renameTrack = null
+            },
+        )
+    }
+
+    infoTrack?.let { tr ->
+        TrackInfoSheet(
+            vm = vm,
+            track = tr,
+            onDismiss = { infoTrack = null },
         )
     }
 
@@ -687,6 +713,8 @@ fun TrackRow(
     onAddToPlaylist: () -> Unit,
     onRemove: () -> Unit,
     removeLabel: String = "Убрать из списка",
+    onRename: (() -> Unit)? = null,
+    onInfo: (() -> Unit)? = null,
 ) {
     val c = LocalAura.current
     var menu by remember { mutableStateOf(false) }
@@ -766,6 +794,20 @@ fun TrackRow(
                 )
                 DropdownMenuItem(text = { Text("Играть следующим") }, onClick = { AudioEngine.playNext(t); menu = false })
                 DropdownMenuItem(text = { Text("Добавить в очередь") }, onClick = { AudioEngine.addToQueue(t); menu = false })
+                if (onRename != null) {
+                    DropdownMenuItem(
+                        text = { Text("Переименовать") },
+                        leadingIcon = { Icon(Icons.Rounded.Edit, null) },
+                        onClick = { menu = false; onRename() },
+                    )
+                }
+                if (onInfo != null) {
+                    DropdownMenuItem(
+                        text = { Text("Инфо о файле") },
+                        leadingIcon = { Icon(Icons.Rounded.Info, null) },
+                        onClick = { menu = false; onInfo() },
+                    )
+                }
                 HorizontalDivider(color = c.border)
                 DropdownMenuItem(text = { Text(removeLabel, color = c.danger) }, onClick = { onRemove(); menu = false })
             }

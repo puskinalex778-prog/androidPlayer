@@ -35,9 +35,11 @@ import com.aura.player.data.OutputMode
 import com.aura.player.data.Prefs
 import com.aura.player.data.Quality
 import com.aura.player.data.Station
+import com.aura.player.data.StatsStore
 import com.aura.player.data.StreamOption
 import com.aura.player.data.StreamResolver
 import com.aura.player.data.Track
+import com.aura.player.data.TrackStat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -83,6 +85,7 @@ data class SoundState(
     val mono: Boolean = false,
     val normalize: Boolean = false,
     val smoothFade: Boolean = true,
+    val autoCrossfade: Boolean = false,
     val quality: AudioQualityMode = AudioQualityMode.STUDIO_FLOAT,
 )
 
@@ -129,12 +132,15 @@ object AudioEngine {
     val art = MutableStateFlow<Bitmap?>(null)
     val accent = MutableStateFlow<Int?>(null)
     val sleepAt = MutableStateFlow(0L)
+    val sleepAfterTrack = MutableStateFlow(false)
+    val stats = MutableStateFlow<List<TrackStat>>(emptyList())
 
     private var queueTracks: List<Track> = emptyList()
     private var currentStation: Station? = null
     private var currentStream: StreamOption? = null
     private val triedStreams = HashSet<String>()
     private var lastId: String? = null
+    private var lastRecordedId: String? = null
     private var sleepJob: Job? = null
     private var artJob: Job? = null
     private var fadeJob: Job? = null
@@ -172,6 +178,9 @@ object AudioEngine {
         restoreSound()
         setupOutputs()
         startLoops()
+        scope.launch {
+            stats.value = withContext(Dispatchers.IO) { StatsStore.sortedList(StatsStore.load(app)) }
+        }
     }
 
     private fun mediaAttributes() = AudioAttributes.Builder()
@@ -408,6 +417,7 @@ object AudioEngine {
     fun setSleep(minutes: Int) {
         sleepJob?.cancel()
         if (minutes <= 0) { sleepAt.value = 0L; return }
+        sleepAfterTrack.value = false
         val at = System.currentTimeMillis() + minutes * 60_000L
         sleepAt.value = at
         sleepJob = scope.launch {
@@ -420,10 +430,40 @@ object AudioEngine {
         }
     }
 
+    fun setSleepAfterTrack(on: Boolean) {
+        if (on) {
+            sleepJob?.cancel()
+            sleepAt.value = 0L
+        }
+        sleepAfterTrack.value = on
+    }
+
+    fun clearStats() {
+        scope.launch {
+            withContext(Dispatchers.IO) { StatsStore.clear(app) }
+            stats.value = emptyList()
+        }
+    }
+
     // ======================= События плеера =======================
 
     private val listener = object : Player.Listener {
         override fun onEvents(p: Player, events: Player.Events) = refresh()
+
+        override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            if (sleepAfterTrack.value && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
+                sleepAfterTrack.value = false
+                player.pause()
+                player.volume = 1f
+                releaseCallRoutingIfNeeded()
+            }
+        }
+
+        override fun onPlaybackStateChanged(playbackState: Int) {
+            if (playbackState == Player.STATE_ENDED && sleepAfterTrack.value) {
+                sleepAfterTrack.value = false
+            }
+        }
 
         override fun onMetadata(metadata: Metadata) {
             for (i in 0 until metadata.length()) {
@@ -492,6 +532,17 @@ object AudioEngine {
             applyPlayback()
             if (!isRadio) loadArt(track?.uri)
         }
+        if (p.isPlaying && id != null && id != lastRecordedId) {
+            lastRecordedId = id
+            val curTitle = track?.title ?: md.title?.toString() ?: currentStation?.name ?: ""
+            val curArtist = track?.artist ?: md.artist?.toString() ?: ""
+            scope.launch {
+                val updated = withContext(Dispatchers.IO) {
+                    StatsStore.recordPlay(app, id, curTitle, curArtist, isRadio)
+                }
+                stats.value = updated
+            }
+        }
         if (p.isPlaying && error.value != null) error.value = null
         if (!p.isPlaying && !p.playWhenReady) releaseCallRoutingIfNeeded()
     }
@@ -516,7 +567,7 @@ object AudioEngine {
         val st = sound.value
         fx.mode = st.voice.mode
         val pitch = (st.voice.pitch * 2.0.pow(st.pitchSemis / 12.0).toFloat()).coerceIn(0.25f, 4f)
-        val speed = if (now.value.isRadio) 1f else st.speed.coerceIn(0.25f, 3f)
+        val speed = if (now.value.isRadio) 1f else (st.voice.speed * st.speed).coerceIn(0.25f, 3f)
         runCatching { player.playbackParameters = PlaybackParameters(speed, pitch) }
     }
 
@@ -542,6 +593,11 @@ object AudioEngine {
     fun setMono(v: Boolean) { sound.update { it.copy(mono = v) }; prefs.mono = v; fx.mono = v }
     fun setNormalize(v: Boolean) { sound.update { it.copy(normalize = v) }; prefs.normalize = v; fx.normalize = v }
     fun setSmoothFade(v: Boolean) { sound.update { it.copy(smoothFade = v) }; prefs.smoothFade = v }
+    fun setAutoCrossfade(v: Boolean) {
+        sound.update { it.copy(autoCrossfade = v) }
+        prefs.autoCrossfade = v
+        if (!v && ::player.isInitialized) player.volume = 1f
+    }
 
     fun setAudioQuality(q: AudioQualityMode) {
         prefs.audioQuality = q.ordinal
@@ -574,7 +630,8 @@ object AudioEngine {
         sound.value = SoundState(
             voice = v, pitchSemis = prefs.pitchSemis, speed = prefs.speed, eqOn = prefs.eqEnabled,
             gains = gains, preset = prefs.eqPreset, bass = prefs.bass, width = prefs.width, preamp = prefs.preamp,
-            balance = prefs.balance, mono = prefs.mono, normalize = prefs.normalize, smoothFade = prefs.smoothFade,
+            balance = prefs.balance, mono = prefs.mono, normalize = prefs.normalize,
+            smoothFade = prefs.smoothFade, autoCrossfade = prefs.autoCrossfade,
             quality = q,
         )
         fx.width = prefs.width
@@ -694,22 +751,61 @@ object AudioEngine {
     private fun startLoops() {
         scope.launch {
             var saveTick = 0
+            var statsTick = 0
             while (isActive) {
                 delay(200)
+                val playing = player.isPlaying
+                val curNow = now.value
+
                 // A–B повтор фрагмента
                 val ab = abLoop.value
-                if (ab.active && player.isPlaying && !now.value.isRadio) {
+                if (ab.active && playing && !curNow.isRadio) {
                     val pos = player.currentPosition
                     if (pos >= ab.bMs!!) player.seekTo(ab.aMs!!)
                 }
+
+                // Плавные переходы между треками (Crossfade)
+                if (sound.value.autoCrossfade && playing && !curNow.isRadio &&
+                    fadeJob?.isActive != true && sleepJob?.isActive != true
+                ) {
+                    val dur = player.duration
+                    val pos = player.currentPosition
+                    if (dur > 15_000L) {
+                        val vol = when {
+                            pos >= dur - 2_000L -> ((dur - pos).coerceAtLeast(0L) / 2000f).coerceIn(0.05f, 1f)
+                            pos in 0L..1_200L -> (pos / 1200f).coerceIn(0.15f, 1f)
+                            else -> 1f
+                        }
+                        if (abs(player.volume - vol) > 0.02f) player.volume = vol
+                    }
+                }
+
                 // сохранение позиции каждые 4 сек
                 saveTick++
                 if (saveTick >= 20) {
                     saveTick = 0
-                    val t = now.value.track
-                    if (t != null && !now.value.isRadio) {
+                    val t = curNow.track
+                    if (t != null && !curNow.isRadio) {
                         prefs.lastUri = t.uri
                         prefs.lastPos = player.currentPosition
+                    }
+                }
+
+                // статистика прослушивания каждые 5 сек
+                if (playing) {
+                    statsTick++
+                    if (statsTick >= 25) {
+                        statsTick = 0
+                        val sid = curNow.track?.id ?: curNow.station?.radioId
+                        if (sid != null) {
+                            val tTitle = curNow.title
+                            val tArtist = curNow.artist
+                            val tRadio = curNow.isRadio
+                            val updated = withContext(Dispatchers.IO) {
+                                StatsStore.addListenTime(app, sid, tTitle, tArtist, tRadio, 5L)
+                            }
+                            stats.value = updated
+                        }
                     }
                 }
             }

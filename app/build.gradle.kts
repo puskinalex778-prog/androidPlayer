@@ -5,7 +5,7 @@ plugins {
 }
 
 base {
-    archivesName.set("PoliSANPlayer-v1.5")
+    archivesName.set("PoliSANPlayer-V1.6")
 }
 
 android {
@@ -16,8 +16,8 @@ android {
         applicationId = "com.aura.player"
         minSdk = 24
         targetSdk = 34
-        versionCode = 6
-        versionName = "1.5"
+        versionCode = 7
+        versionName = "1.6"
     }
 
     buildTypes {

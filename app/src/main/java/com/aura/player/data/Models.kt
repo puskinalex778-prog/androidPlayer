@@ -90,6 +90,53 @@ enum class Country(val code: String, val title: String, val flag: String) {
     }
 }
 
+/** Кнопки настраиваемой нижней панели полноэкранного плеера. */
+enum class PlayerDockAction(val title: String) {
+    VOICE("Голос"),
+    EQ("EQ"),
+    TIMER("Таймер"),
+    OUTPUT("Вывод"),
+    RADIO("Радио"),
+    PLAYLISTS("Плейлисты"),
+    QUEUE("Очередь"),
+    LYRICS("Текст"),
+    SPEED("Скорость"),
+    VISUALIZER("Визуал"),
+    BOOKMARK("Закладки"),
+    CAR_MODE("Авто"),
+    INFO("Инфо");
+
+    companion object {
+        val defaultDock = listOf(VOICE, EQ, TIMER, OUTPUT)
+
+        fun parseList(csv: String): List<PlayerDockAction> {
+            val parsed = csv.split(',')
+                .mapNotNull { token -> entries.firstOrNull { it.name == token.trim() } }
+                .distinct()
+                .take(5)
+            return if (parsed.size >= 2) parsed else defaultDock
+        }
+    }
+}
+
+/** Закладка / метка времени внутри трека (удобно для миксов, лекций и аудиокниг). */
+data class TrackBookmark(
+    val id: String,
+    val trackUri: String,
+    val positionMs: Long,
+    val label: String,
+)
+
+/** Статистика прослушиваний трека или радиостанции. */
+data class TrackStat(
+    val id: String,
+    val title: String,
+    val artist: String,
+    val isRadio: Boolean,
+    val plays: Int,
+    val listenSec: Long,
+)
+
 /** Качество интернет-радио по умолчанию */
 enum class Quality(val title: String) {
     LOW("Эконом"), MEDIUM("Стандарт"), HIGH("Максимум");

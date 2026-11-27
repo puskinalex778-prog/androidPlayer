@@ -13,7 +13,9 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.basicMarquee
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -26,6 +28,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -34,6 +37,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.PlaylistAdd
@@ -98,12 +102,17 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
+import com.aura.player.data.OutputMode
+import com.aura.player.data.PlayerDockAction
 import com.aura.player.playback.AudioEngine
 import com.aura.player.playback.NowPlaying
 import kotlinx.coroutines.delay
+import kotlin.math.abs
+import kotlin.math.roundToInt
 
 @Composable
 fun rememberProgress(): Pair<Long, Long> {
@@ -128,10 +137,20 @@ fun MiniPlayer(now: NowPlaying, onOpen: () -> Unit, modifier: Modifier = Modifie
     val (pos, dur) = rememberProgress()
     val art by AudioEngine.art.collectAsState()
     val bg = if (c.style == UiStyle.GLASS) c.surfaceSolid.copy(alpha = 0.88f) else c.surface
+    var dragY by remember { mutableFloatStateOf(0f) }
     Column(
         modifier
             .fillMaxWidth()
             .background(bg)
+            .pointerInput(Unit) {
+                detectVerticalDragGestures(
+                    onDragEnd = {
+                        if (dragY < -55f) onOpen()
+                        dragY = 0f
+                    },
+                    onDragCancel = { dragY = 0f },
+                ) { _, dy -> dragY += dy }
+            }
             .clickable(onClick = onOpen),
     ) {
         if (!now.isRadio && dur > 0) {
@@ -229,6 +248,10 @@ fun FullPlayer(
     onClose: () -> Unit,
     onOpenVoice: () -> Unit,
     onOpenEq: () -> Unit,
+    onOpenRadio: () -> Unit = {},
+    onOpenPlaylists: () -> Unit = {},
+    onOpenCarMode: () -> Unit = {},
+    onCustomizeDock: () -> Unit = {},
 ) {
     val c = LocalAura.current
     val now by AudioEngine.now.collectAsState()
@@ -238,7 +261,9 @@ fun FullPlayer(
     val settings by vm.settings.collectAsState()
     val favs by vm.favorites.collectAsState()
     val favTracks by vm.favoriteTracks.collectAsState()
+    val allBookmarks by vm.bookmarks.collectAsState()
     val sleepAt by AudioEngine.sleepAt.collectAsState()
+    val sleepAfterTrack by AudioEngine.sleepAfterTrack.collectAsState()
     val artBmp by AudioEngine.art.collectAsState()
     val art: ImageBitmap? = remember(artBmp) { artBmp?.asImageBitmap() }
     val (pos, dur) = rememberProgress()
@@ -247,7 +272,14 @@ fun FullPlayer(
     var showSleep by remember { mutableStateOf(false) }
     var showOutput by remember { mutableStateOf(false) }
     var showPlaylistAdd by remember { mutableStateOf(false) }
+    var showLyrics by remember { mutableStateOf(false) }
+    var showSpeed by remember { mutableStateOf(false) }
+    var showVizPicker by remember { mutableStateOf(false) }
+    var showBookmarks by remember { mutableStateOf(false) }
+    var showTrackInfo by remember { mutableStateOf(false) }
     var beat by remember { mutableFloatStateOf(0f) }
+    var dismissDragY by remember { mutableFloatStateOf(0f) }
+    val animDismissY by animateFloatAsState(dismissDragY, spring(stiffness = 700f), label = "dismissY")
 
     val stage = settings.playerStage
     val vizType = settings.visualizer
@@ -258,47 +290,126 @@ fun FullPlayer(
         Column(
             Modifier
                 .fillMaxSize()
+                .offset { IntOffset(0, animDismissY.roundToInt()) }
                 .statusBarsPadding()
                 .navigationBarsPadding()
                 .padding(horizontal = 20.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // ---- верхняя панель: Кассета | Обложка | Визуал ----
-            Row(
-                Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 8.dp),
-                verticalAlignment = Alignment.CenterVertically,
+            // ---- верхняя область со свайпом вниз, индикатором таймера справа вверху и переключателем Кассета | Обложка | Визуал ----
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onDragEnd = {
+                                if (dismissDragY > 110f) onClose()
+                                dismissDragY = 0f
+                            },
+                            onDragCancel = { dismissDragY = 0f },
+                        ) { _, dy ->
+                            dismissDragY = (dismissDragY + dy).coerceIn(0f, 360f)
+                        }
+                    },
             ) {
-                IconButton(onClick = onClose) {
-                    Icon(Icons.Rounded.KeyboardArrowDown, "Свернуть", tint = c.text, modifier = Modifier.size(30.dp))
-                }
-                Box(Modifier.weight(1f).padding(horizontal = 6.dp)) {
-                    FlatSegmentedControl(
-                        options = listOf("Кассета", "Обложка", "Визуал"),
-                        selectedIndex = stage,
-                        onSelect = { vm.setPlayerStage(it) },
+                Box(
+                    Modifier
+                        .fillMaxWidth()
+                        .padding(top = 6.dp),
+                ) {
+                    Box(
+                        Modifier
+                            .align(Alignment.Center)
+                            .width(42.dp)
+                            .height(4.dp)
+                            .clip(CircleShape)
+                            .background(c.border.copy(alpha = 0.9f)),
                     )
+                    if (sleepAt > 0 || sleepAfterTrack) {
+                        val timerBadge = if (sleepAfterTrack) "трек"
+                        else "${((sleepAt - System.currentTimeMillis()) / 60000).coerceAtLeast(1)} мин"
+                        Row(
+                            Modifier
+                                .align(Alignment.CenterEnd)
+                                .clip(RoundedCornerShape(50))
+                                .background(c.accentSoft)
+                                .border(c.borderWidth, c.accent, RoundedCornerShape(50))
+                                .clickable { showSleep = true }
+                                .padding(horizontal = 8.dp, vertical = 3.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Icon(Icons.Rounded.Bedtime, "Таймер", tint = c.accent, modifier = Modifier.size(12.dp))
+                            Text(timerBadge, style = MaterialTheme.typography.labelSmall, color = c.accent, fontWeight = FontWeight.Bold)
+                        }
+                    }
                 }
-                IconButton(onClick = { if (!now.isRadio) showQueue = true else onClose() }) {
-                    Icon(
-                        if (!now.isRadio) Icons.AutoMirrored.Rounded.QueueMusic else Icons.Rounded.Radio,
-                        "Очередь",
-                        tint = c.text,
-                    )
+                Row(
+                    Modifier.fillMaxWidth().padding(top = 2.dp, bottom = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    IconButton(onClick = onClose) {
+                        Icon(Icons.Rounded.KeyboardArrowDown, "Свернуть", tint = c.text, modifier = Modifier.size(30.dp))
+                    }
+                    Box(Modifier.weight(1f).padding(horizontal = 2.dp)) {
+                        FlatSegmentedControl(
+                            options = listOf("Кассета", "Обложка", "Визуал"),
+                            selectedIndex = stage,
+                            onSelect = { vm.setPlayerStage(it) },
+                        )
+                    }
+                    IconButton(onClick = { if (!now.isRadio) showQueue = true else onClose() }) {
+                        Icon(
+                            if (!now.isRadio) Icons.AutoMirrored.Rounded.QueueMusic else Icons.Rounded.Radio,
+                            "Очередь",
+                            tint = c.text,
+                        )
+                    }
                 }
             }
 
-            // ---- центральная сцена ----
+            // ---- центральная сцена (горизонтальный свайп = трек, свайп вниз = свернуть) ----
             Box(
                 Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .pointerInput(now.isRadio) {
-                        if (now.isRadio) return@pointerInput
                         var dx = 0f
-                        detectHorizontalDragGestures(onDragEnd = {
-                            if (dx < -120) AudioEngine.next() else if (dx > 120) AudioEngine.prev()
-                            dx = 0f
-                        }) { _, d -> dx += d }
+                        var lockedAxis = 0
+                        detectDragGestures(
+                            onDragStart = { dx = 0f; lockedAxis = 0 },
+                            onDragEnd = {
+                                when (lockedAxis) {
+                                    1 -> if (!now.isRadio) {
+                                        if (dx < -110f) AudioEngine.next() else if (dx > 110f) AudioEngine.prev()
+                                    }
+                                    2 -> if (dismissDragY > 110f) onClose()
+                                }
+                                dx = 0f
+                                lockedAxis = 0
+                                dismissDragY = 0f
+                            },
+                            onDragCancel = {
+                                dx = 0f
+                                lockedAxis = 0
+                                dismissDragY = 0f
+                            },
+                        ) { change, drag ->
+                            if (lockedAxis == 0) {
+                                if (abs(drag.y) > abs(drag.x) && drag.y > 0f) lockedAxis = 2
+                                else if (!now.isRadio && abs(drag.x) > abs(drag.y)) lockedAxis = 1
+                            }
+                            when (lockedAxis) {
+                                1 -> {
+                                    change.consume()
+                                    dx += drag.x
+                                }
+                                2 -> {
+                                    change.consume()
+                                    dismissDragY = (dismissDragY + drag.y).coerceIn(0f, 360f)
+                                }
+                            }
+                        }
                     },
                 contentAlignment = Alignment.Center,
             ) {
@@ -567,41 +678,68 @@ fun FullPlayer(
                 }
             }
 
-            // ---- нижняя панель инструментов ----
+            // ---- настраиваемая нижняя панель инструментов (удержание = настроить) ----
             val voiceActive = sound.voice.ordinal != 0 || sound.pitchSemis != 0f || sound.speed != 1f
             val eqActive = sound.eqOn && (sound.gains.any { it != 0f } || sound.bass > 0f)
+            val trackUri = now.track?.uri
+            val hasBookmarks = trackUri != null && allBookmarks.any { it.trackUri == trackUri }
             Row(
                 Modifier.fillMaxWidth().padding(bottom = 10.dp),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(if (settings.dockActions.size >= 5) 6.dp else 8.dp),
             ) {
-                ToolButton(
-                    icon = Icons.Rounded.RecordVoiceOver,
-                    label = if (sound.voice.ordinal != 0) sound.voice.title else "Голос",
-                    active = voiceActive,
-                    modifier = Modifier.weight(1f),
-                    onClick = onOpenVoice,
-                )
-                ToolButton(
-                    icon = Icons.Rounded.Equalizer,
-                    label = if (eqActive) sound.preset else "EQ",
-                    active = eqActive,
-                    modifier = Modifier.weight(1f),
-                    onClick = onOpenEq,
-                )
-                ToolButton(
-                    icon = Icons.Rounded.Bedtime,
-                    label = if (sleepAt > 0) "${((sleepAt - System.currentTimeMillis()) / 60000).coerceAtLeast(1)} м" else "Таймер",
-                    active = sleepAt > 0,
-                    modifier = Modifier.weight(1f),
-                    onClick = { showSleep = true },
-                )
-                ToolButton(
-                    icon = if (out.mode == com.aura.player.data.OutputMode.SPEAKER) Icons.Rounded.Speaker else Icons.Rounded.Headphones,
-                    label = "Вывод",
-                    active = out.mode != com.aura.player.data.OutputMode.AUTO,
-                    modifier = Modifier.weight(1f),
-                    onClick = { showOutput = true },
-                )
+                settings.dockActions.forEach { action ->
+                    val (label, active) = when (action) {
+                        PlayerDockAction.VOICE -> (if (sound.voice.ordinal != 0) sound.voice.title else action.title) to voiceActive
+                        PlayerDockAction.EQ -> (if (eqActive) sound.preset else action.title) to eqActive
+                        PlayerDockAction.TIMER -> {
+                            val lbl = when {
+                                sleepAfterTrack -> "Трек"
+                                sleepAt > 0 -> "${((sleepAt - System.currentTimeMillis()) / 60000).coerceAtLeast(1)} м"
+                                else -> action.title
+                            }
+                            lbl to (sleepAt > 0 || sleepAfterTrack)
+                        }
+                        PlayerDockAction.OUTPUT -> action.title to (out.mode != OutputMode.AUTO)
+                        PlayerDockAction.RADIO -> action.title to now.isRadio
+                        PlayerDockAction.PLAYLISTS -> action.title to false
+                        PlayerDockAction.QUEUE -> action.title to showQueue
+                        PlayerDockAction.LYRICS -> action.title to showLyrics
+                        PlayerDockAction.SPEED -> {
+                            val spd = (sound.speed * 100).roundToInt() / 100f
+                            val lbl = if (sound.speed != 1f) "${spd}x" else action.title
+                            lbl to (sound.speed != 1f || sound.pitchSemis != 0f)
+                        }
+                        PlayerDockAction.VISUALIZER -> action.title to (stage == 2)
+                        PlayerDockAction.BOOKMARK -> action.title to hasBookmarks
+                        PlayerDockAction.CAR_MODE -> action.title to false
+                        PlayerDockAction.INFO -> action.title to false
+                    }
+                    ToolButton(
+                        icon = dockActionIcon(action, out.mode),
+                        label = label,
+                        active = active,
+                        compact = settings.dockActions.size >= 5,
+                        modifier = Modifier.weight(1f),
+                        onClick = {
+                            when (action) {
+                                PlayerDockAction.VOICE -> onOpenVoice()
+                                PlayerDockAction.EQ -> onOpenEq()
+                                PlayerDockAction.TIMER -> showSleep = true
+                                PlayerDockAction.OUTPUT -> showOutput = true
+                                PlayerDockAction.RADIO -> { onClose(); onOpenRadio() }
+                                PlayerDockAction.PLAYLISTS -> { onClose(); onOpenPlaylists() }
+                                PlayerDockAction.QUEUE -> if (!now.isRadio) showQueue = true else showOutput = true
+                                PlayerDockAction.LYRICS -> showLyrics = true
+                                PlayerDockAction.SPEED -> showSpeed = true
+                                PlayerDockAction.VISUALIZER -> { vm.setPlayerStage(2); showVizPicker = true }
+                                PlayerDockAction.BOOKMARK -> showBookmarks = true
+                                PlayerDockAction.CAR_MODE -> onOpenCarMode()
+                                PlayerDockAction.INFO -> if (now.track != null) showTrackInfo = true else showOutput = true
+                            }
+                        },
+                        onLongClick = onCustomizeDock,
+                    )
+                }
             }
         }
     }
@@ -618,15 +756,27 @@ fun FullPlayer(
             AddToPlaylistSheet(vm = vm, track = tr, onDismiss = { showPlaylistAdd = false })
         }
     }
+    if (showLyrics) LyricsSheet(vm = vm, track = now.track, posMs = pos, onDismiss = { showLyrics = false })
+    if (showSpeed) QuickSpeedPitchSheet(onDismiss = { showSpeed = false })
+    if (showVizPicker) VisualizerPickerSheet(vm = vm, onDismiss = { showVizPicker = false })
+    if (showBookmarks) BookmarksSheet(vm = vm, track = now.track, posMs = pos, onDismiss = { showBookmarks = false })
+    if (showTrackInfo) {
+        now.track?.let { tr ->
+            TrackInfoSheet(vm = vm, track = tr, onDismiss = { showTrackInfo = false })
+        }
+    }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
 private fun ToolButton(
     icon: ImageVector,
     label: String,
     active: Boolean,
     modifier: Modifier,
+    compact: Boolean = false,
     onClick: () -> Unit,
+    onLongClick: () -> Unit = {},
 ) {
     val c = LocalAura.current
     val shape = RoundedCornerShape(c.controlRadius)
@@ -635,15 +785,16 @@ private fun ToolButton(
             .clip(shape)
             .background(if (active) c.accentSoft else c.surface)
             .border(c.borderWidth, if (active) c.accent else c.border, shape)
-            .clickable(onClick = onClick)
-            .padding(vertical = 8.dp, horizontal = 4.dp),
+            .combinedClickable(onClick = onClick, onLongClick = onLongClick)
+            .padding(vertical = 8.dp, horizontal = if (compact) 2.dp else 4.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.spacedBy(3.dp),
     ) {
-        Icon(icon, label, tint = if (active) c.accent else c.textDim, modifier = Modifier.size(19.dp))
+        Icon(icon, label, tint = if (active) c.accent else c.textDim, modifier = Modifier.size(if (compact) 18.dp else 19.dp))
         Text(
             label,
             style = MaterialTheme.typography.labelMedium,
+            fontSize = if (compact) 10.sp else 11.sp,
             color = if (active) c.accent else c.text,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
@@ -724,15 +875,19 @@ private fun QueueList() {
 @Composable
 fun SleepDialog(sleepAt: Long, onDismiss: () -> Unit) {
     val c = LocalAura.current
+    val sleepAfterTrack by AudioEngine.sleepAfterTrack.collectAsState()
     AlertDialog(
         onDismissRequest = onDismiss,
         containerColor = c.surfaceSolid,
         title = { Text("Таймер сна", color = c.text) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                if (sleepAt > 0) {
-                    val left = ((sleepAt - System.currentTimeMillis()) / 60000).coerceAtLeast(0)
-                    Text("Остановка через ~$left мин", color = c.accent, fontWeight = FontWeight.SemiBold)
+                when {
+                    sleepAfterTrack -> Text("Пауза сразу после окончания текущего трека", color = c.accent, fontWeight = FontWeight.SemiBold)
+                    sleepAt > 0 -> {
+                        val left = ((sleepAt - System.currentTimeMillis()) / 60000).coerceAtLeast(1)
+                        Text("Остановка через ~$left мин", color = c.accent, fontWeight = FontWeight.SemiBold)
+                    }
                 }
                 Text("Музыка плавно затихнет и встанет на паузу.", color = c.textDim, style = MaterialTheme.typography.bodyMedium)
                 Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -740,11 +895,22 @@ fun SleepDialog(sleepAt: Long, onDismiss: () -> Unit) {
                         FlatChip("$m мин", false, onClick = { AudioEngine.setSleep(m); onDismiss() })
                     }
                 }
+                FlatChip(
+                    text = "В конце текущего трека",
+                    selected = sleepAfterTrack,
+                    onClick = { AudioEngine.setSleepAfterTrack(!sleepAfterTrack); onDismiss() },
+                )
             }
         },
         confirmButton = { TextButton(onClick = onDismiss) { Text("Закрыть") } },
         dismissButton = {
-            if (sleepAt > 0) TextButton(onClick = { AudioEngine.setSleep(0); onDismiss() }) { Text("Выключить") }
+            if (sleepAt > 0 || sleepAfterTrack) {
+                TextButton(onClick = {
+                    AudioEngine.setSleep(0)
+                    AudioEngine.setSleepAfterTrack(false)
+                    onDismiss()
+                }) { Text("Выключить") }
+            }
         },
     )
 }
