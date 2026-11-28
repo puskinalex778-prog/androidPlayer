@@ -710,7 +710,9 @@ fun FullPlayer(
 
             // ---- настраиваемая нижняя панель инструментов (удержание = настроить) ----
             val voiceActive = sound.voice.ordinal != 0 || sound.pitchSemis != 0f || sound.speed != 1f
-            val eqActive = sound.eqOn && (sound.gains.any { it != 0f } || sound.bass > 0f)
+            val stemActive = sound.stemMode != com.aura.player.data.StemIsolationMode.OFF
+            val devEqActive = sound.deviceEqEnabled && sound.activeDeviceProfile != null
+            val eqActive = stemActive || devEqActive || (sound.eqOn && (sound.gains.any { it != 0f } || sound.bass > 0f))
             val trackUri = now.track?.uri
             val hasBookmarks = trackUri != null && allBookmarks.any { it.trackUri == trackUri }
             Row(
@@ -720,7 +722,15 @@ fun FullPlayer(
                 settings.dockActions.forEach { action ->
                     val (label, active) = when (action) {
                         PlayerDockAction.VOICE -> (if (sound.voice.ordinal != 0) sound.voice.title else action.title) to voiceActive
-                        PlayerDockAction.EQ -> (if (eqActive) sound.preset else action.title) to eqActive
+                        PlayerDockAction.EQ -> {
+                            val lbl = when {
+                                stemActive -> sound.stemMode.shortTitle
+                                sound.eqOn && (sound.gains.any { it != 0f } || sound.bass > 0f) -> sound.preset
+                                devEqActive -> "AutoEQ"
+                                else -> action.title
+                            }
+                            lbl to eqActive
+                        }
                         PlayerDockAction.TIMER -> {
                             val lbl = when {
                                 sleepAfterTrack -> "Трек"

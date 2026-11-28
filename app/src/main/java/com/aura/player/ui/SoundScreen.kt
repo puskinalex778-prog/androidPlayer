@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -31,6 +32,7 @@ import androidx.compose.material.icons.rounded.RecordVoiceOver
 import androidx.compose.material.icons.rounded.RestartAlt
 import androidx.compose.material.icons.rounded.Speaker
 import androidx.compose.material.icons.rounded.SpeakerGroup
+import androidx.compose.material.icons.rounded.Tune
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -46,6 +48,9 @@ import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,7 +64,10 @@ import androidx.compose.ui.unit.sp
 import com.aura.player.data.AudioEngineMode
 import com.aura.player.data.AudioQualityMode
 import com.aura.player.data.DecoderPriority
+import com.aura.player.data.DeviceCategory
+import com.aura.player.data.DeviceEqCatalog
 import com.aura.player.data.OutputMode
+import com.aura.player.data.StemIsolationMode
 import com.aura.player.playback.AudioEngine
 import com.aura.player.playback.EqPresets
 import com.aura.player.playback.VoiceEffect
@@ -79,6 +87,7 @@ fun SoundScreen(
     val out by AudioEngine.output.collectAsState()
     val now by AudioEngine.now.collectAsState()
     val uiSettings by vm.settings.collectAsState()
+    var showDevicePicker by remember { mutableStateOf(false) }
 
     Column(Modifier.fillMaxSize()) {
         FlatTopBar(
@@ -189,8 +198,128 @@ fun SoundScreen(
                     }
                 }
                 1 -> {
-                    // ===================== ЭКВАЛАЙЗЕР + AIMP DSP =====================
+                    // ===================== ЭКВАЛАЙЗЕР + AUTOEQ + ИЗОЛЯЦИЯ ДОРОЖЕК =====================
                     item {
+                        if (s.quality == AudioQualityMode.DIRECT_PURE) {
+                            FlatCard(
+                                Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                                color = c.accentSoft,
+                                onClick = { AudioEngine.setAudioQuality(AudioQualityMode.STUDIO_FLOAT) },
+                                padding = PaddingValues(12.dp),
+                            ) {
+                                Text(
+                                    "Включён режим Direct — эквалайзер, AutoEQ и изоляция дорожек в обходе. Нажмите сюда, чтобы переключить на 32-bit DSP.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = c.text,
+                                )
+                            }
+                        }
+
+                        // ---- 1. Подстройка под устройство (AutoEQ) ----
+                        val prof = s.activeDeviceProfile
+                        FlatCard(
+                            Modifier.fillMaxWidth().padding(bottom = 10.dp),
+                            color = if (s.deviceEqEnabled && prof != null) c.accentSoft else c.surface,
+                            padding = PaddingValues(14.dp),
+                        ) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        if (out.mode == OutputMode.SPEAKER || out.headphonesName == null) Icons.Rounded.Speaker else Icons.Rounded.Headphones,
+                                        null,
+                                        tint = c.accent,
+                                        modifier = Modifier.size(22.dp),
+                                    )
+                                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                                        Text("Подстройка под устройство (AutoEQ)", style = MaterialTheme.typography.titleSmall, color = c.text)
+                                        Text(
+                                            "Устройство: ${out.activeLabel}",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = c.textDim,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                    }
+                                    Switch(
+                                        checked = s.deviceEqEnabled,
+                                        onCheckedChange = { AudioEngine.setDeviceEqEnabled(it) },
+                                        colors = SwitchDefaults.colors(checkedTrackColor = c.accent),
+                                    )
+                                }
+
+                                if (prof != null) {
+                                    Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                        Text(
+                                            "${prof.name} (${prof.year})",
+                                            style = MaterialTheme.typography.titleSmall,
+                                            color = if (s.deviceEqEnabled) c.accent else c.text,
+                                            modifier = Modifier.weight(1f),
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        Text(
+                                            if (s.deviceEqAuto) "АВТО" else "ВРУЧНУЮ",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            fontFamily = FontFamily.Monospace,
+                                            color = c.onAccent,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(5.dp))
+                                                .background(if (s.deviceEqEnabled) c.accent else c.textDim)
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
+                                    Text(prof.flawFix, style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                                } else {
+                                    Text(
+                                        "Модель «${out.activeLabel}» не найдена автоматически — выберите ближайшую модель из ${DeviceEqCatalog.all.size} профилей.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textDim,
+                                    )
+                                }
+
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    FlatChip(
+                                        text = "Автоопределение",
+                                        selected = s.deviceEqAuto,
+                                        onClick = { AudioEngine.setDeviceEqAuto(true) },
+                                        icon = Icons.Rounded.AutoMode,
+                                    )
+                                    FlatChip(
+                                        text = "Выбрать модель (${DeviceEqCatalog.all.size})",
+                                        selected = !s.deviceEqAuto,
+                                        onClick = { showDevicePicker = true },
+                                        icon = Icons.Rounded.Tune,
+                                    )
+                                }
+                            }
+                        }
+
+                        // ---- 2. Изолированное прослушивание дорожки (DSP Stem Isolation) ----
+                        SectionHeader("Изоляция дорожки (32-bit DSP)")
+                        FlatCard(Modifier.fillMaxWidth().padding(bottom = 12.dp), padding = PaddingValues(12.dp)) {
+                            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                FlatSegmentedControl(
+                                    options = StemIsolationMode.entries.map { it.shortTitle },
+                                    selectedIndex = s.stemMode.ordinal,
+                                    onSelect = { idx -> AudioEngine.setStemMode(StemIsolationMode.entries[idx]) },
+                                )
+                                Text(
+                                    s.stemMode.desc,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = if (s.stemMode != StemIsolationMode.OFF) c.accent else c.textDim,
+                                )
+                                if (s.stemMode == StemIsolationMode.VOCAL || s.stemMode == StemIsolationMode.INSTRUMENTAL) {
+                                    Text(
+                                        "Работает в реальном времени по стерео-фазе (Mid/Side) и 24 дБ/окт фильтрам — наилучший эффект на качественных стерео-треках.",
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = c.textDim,
+                                    )
+                                }
+                            }
+                        }
+
+                        // ---- 3. 10-полосный эквалайзер ----
                         FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(14.dp)) {
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Column(Modifier.weight(1f)) {
@@ -299,6 +428,122 @@ fun SoundScreen(
                     // ===================== ВЫВОД И КАЧЕСТВО ЗВУКА =====================
                     item {
                         OutputAndQualityControls()
+                    }
+                }
+            }
+        }
+    }
+
+    if (showDevicePicker) {
+        DeviceEqPickerSheet(
+            activeId = s.activeDeviceProfile?.id,
+            isAuto = s.deviceEqAuto,
+            detectedLabel = out.activeLabel,
+            onSelectAuto = {
+                AudioEngine.selectDeviceEqManual(null)
+                showDevicePicker = false
+            },
+            onSelectProfile = { id ->
+                AudioEngine.selectDeviceEqManual(id)
+                showDevicePicker = false
+            },
+            onDismiss = { showDevicePicker = false },
+        )
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun DeviceEqPickerSheet(
+    activeId: String?,
+    isAuto: Boolean,
+    detectedLabel: String,
+    onSelectAuto: () -> Unit,
+    onSelectProfile: (String) -> Unit,
+    onDismiss: () -> Unit,
+) {
+    val c = LocalAura.current
+    var query by remember { mutableStateOf("") }
+    var cat by remember { mutableStateOf<DeviceCategory?>(null) }
+
+    val filtered = remember(query, cat) {
+        DeviceEqCatalog.all.filter { p ->
+            (cat == null || p.category == cat) && (
+                query.isBlank() ||
+                    p.name.contains(query, true) ||
+                    p.flawFix.contains(query, true) ||
+                    p.year.contains(query, true) ||
+                    p.matchKeys.any { it.contains(query, true) }
+                )
+        }
+    }
+
+    ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surfaceSolid) {
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp)) {
+            Text("Профили наушников и колонок", style = MaterialTheme.typography.titleLarge, color = c.text)
+            Text(
+                "Модели 2015–2026 · Автоопределено: $detectedLabel",
+                style = MaterialTheme.typography.bodySmall,
+                color = c.textDim,
+            )
+            Spacer(Modifier.height(10.dp))
+
+            FlatSearchField(query, { query = it }, "Поиск модели (FreeBuds, AirPods, Sony, JBL…)")
+            Spacer(Modifier.height(8.dp))
+
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                FlatChip("Все (${DeviceEqCatalog.all.size})", cat == null, onClick = { cat = null })
+                DeviceCategory.entries.forEach { dc ->
+                    FlatChip(dc.title, cat == dc, onClick = { cat = if (cat == dc) null else dc })
+                }
+            }
+            Spacer(Modifier.height(10.dp))
+
+            FlatCard(
+                Modifier.fillMaxWidth().padding(bottom = 8.dp),
+                color = if (isAuto) c.accentSoft else c.surface2,
+                onClick = onSelectAuto,
+                padding = PaddingValues(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Rounded.AutoMode, null, tint = c.accent, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                        Text("Автоопределение по Bluetooth / динамику", style = MaterialTheme.typography.titleSmall, color = if (isAuto) c.accent else c.text)
+                        Text("Подбирает калибровку автоматически при подключении устройства", style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                    }
+                    if (isAuto) Icon(Icons.Rounded.CheckCircle, null, tint = c.accent)
+                }
+            }
+
+            LazyColumn(Modifier.fillMaxWidth().height(340.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                items(filtered, key = { it.id }) { p ->
+                    val sel = !isAuto && activeId == p.id
+                    FlatCard(
+                        Modifier.fillMaxWidth(),
+                        color = if (sel) c.accentSoft else c.surface2,
+                        onClick = { onSelectProfile(p.id) },
+                        padding = PaddingValues(12.dp),
+                    ) {
+                        Row(verticalAlignment = Alignment.Top) {
+                            Column(Modifier.weight(1f)) {
+                                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    Text(p.name, style = MaterialTheme.typography.titleSmall, color = if (sel) c.accent else c.text)
+                                    Text(
+                                        p.year,
+                                        fontSize = 9.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = c.textDim,
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(c.surfaceSolid)
+                                            .padding(horizontal = 5.dp, vertical = 1.dp),
+                                    )
+                                }
+                                Spacer(Modifier.height(3.dp))
+                                Text(p.flawFix, style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                            }
+                            if (sel) Icon(Icons.Rounded.CheckCircle, null, tint = c.accent, modifier = Modifier.padding(start = 6.dp))
+                        }
                     }
                 }
             }

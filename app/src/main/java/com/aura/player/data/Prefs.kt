@@ -83,6 +83,9 @@ class Prefs(context: Context) {
     var decoderPriority: Int get() = sp.getInt("decoderPriority", 0); set(v) = put("decoderPriority", v)
     var limiterEnabled: Boolean get() = sp.getBoolean("limiterEnabled", true); set(v) = put("limiterEnabled", v)
     var vizSyncOffsetMs: Int get() = sp.getInt("vizSyncOffsetMs", 0); set(v) = put("vizSyncOffsetMs", v)
+    var deviceEqEnabled: Boolean get() = sp.getBoolean("deviceEqEnabled", true); set(v) = put("deviceEqEnabled", v)
+    var deviceEqAuto: Boolean get() = sp.getBoolean("deviceEqAuto", true); set(v) = put("deviceEqAuto", v)
+    var deviceEqManualId: String get() = str("deviceEqManualId", ""); set(v) = put("deviceEqManualId", v)
 
     // ---- радио ----
     var quality: Int get() = sp.getInt("quality", 1); set(v) = put("quality", v)

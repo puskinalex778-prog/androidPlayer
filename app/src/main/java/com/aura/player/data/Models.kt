@@ -88,6 +88,33 @@ enum class DecoderPriority(val title: String, val desc: String) {
     }
 }
 
+/** Изолированное прослушивание партий трека в реальном времени (32-bit DSP Mid/Side + 24 dB/oct кроссоверы). */
+enum class StemIsolationMode(val title: String, val shortTitle: String, val desc: String) {
+    OFF("Весь микс", "Микс", "Обычное полноценное звучание трека"),
+    VOCAL("Только голос", "Голос", "Выделяет центральный вокал (240–3600 Гц) и подавляет бас и стерео-инструменты"),
+    BASS("Только бас", "Бас", "Изолирует бочку и бас-гитару крутым фильтром 24 дБ/окт ниже 175 Гц"),
+    INSTRUMENTAL("Только инструментал", "Минус", "Подавляет центральный вокал (180–4800 Гц), сохраняя бас, ударные и стерео-инструменты");
+}
+
+enum class DeviceCategory(val title: String) {
+    TWS("TWS / Вкладыши"),
+    OVER_EAR("Полноразмерные"),
+    SPEAKER("Колонки"),
+    UNIVERSAL("Общие"),
+}
+
+/** 10-полосный AutoEQ профиль калибровки под конкретные наушники или колонку. */
+data class DeviceEqProfile(
+    val id: String,
+    val name: String,
+    val year: String,
+    val category: DeviceCategory,
+    val flawFix: String,
+    val gains: List<Float>, // 10 полос: 31, 62, 125, 250, 500, 1k, 2k, 4k, 8k, 16k Hz
+    val preampDb: Float,
+    val matchKeys: List<String>,
+)
+
 /** Один поток станции — конкретный битрейт. */
 data class StreamOption(
     val bitrate: Int,          // кбит/с; 0 = адаптивный (HLS) / неизвестно

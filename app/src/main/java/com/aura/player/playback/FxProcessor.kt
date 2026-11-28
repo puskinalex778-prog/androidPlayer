@@ -29,15 +29,20 @@ import kotlin.math.tanh
 class FxProcessor : BaseAudioProcessor() {
 
     enum class Mode { NONE, ROBOT, ECHO, HALL, DISTORT, TELEPHONE, UNDERWATER, DEMON, VINYL, KARAOKE, AUDIO_8D }
+    enum class StemMode { OFF, VOCAL, BASS, INSTRUMENTAL }
 
     // ---------- параметры ----------
     @Volatile var mode: Mode = Mode.NONE
+    @Volatile var stemMode: StemMode = StemMode.OFF
     @Volatile var directBypass: Boolean = false
     @Volatile var hiResDither: Boolean = true
     @Volatile var limiterEnabled: Boolean = true
     @Volatile private var gains = FloatArray(10)
     @Volatile private var eqOn = true
     @Volatile private var bassDb = 0f
+    @Volatile private var deviceGains = FloatArray(10)
+    @Volatile private var deviceEqActive = false
+    @Volatile private var devicePreampDb = 0f
     @Volatile var width = 1f
     @Volatile var balance = 0f        // -1 (Л) .. 0 .. +1 (П)
     @Volatile var mono = false
@@ -59,6 +64,14 @@ class FxProcessor : BaseAudioProcessor() {
         eqOn = enabled
         bassDb = bass
         preampDb = preamp
+        version++
+    }
+
+    /** Отдельный 10-полосный AutoEQ слой калибровки под наушники/колонку (суммируется с пользовательским EQ). */
+    fun setDeviceEq(enabled: Boolean, g: FloatArray, preamp: Float) {
+        deviceEqActive = enabled
+        deviceGains = g.copyOf()
+        devicePreampDb = preamp
         version++
     }
 
@@ -97,6 +110,13 @@ class FxProcessor : BaseAudioProcessor() {
     private var zs = DoubleArray(nFilters * 2 * 2)
     private var activeFilters = IntArray(0)
     private var gainLin = 1f
+
+    // Выделенные 24 dB/oct фильтры для DSP-изоляции дорожек (Голос / Бас / Инструментал)
+    // 0,1 = HP 230 Гц (вокал); 2,3 = LP 3700 Гц (вокал/воздух); 4,5 = LP 175 Гц (бас)
+    private val stemCoef = DoubleArray(6 * 5)
+    private val stemZ = DoubleArray(6 * 2 * 2)
+    private var stemMidEnv = 0.05f
+    private var stemSideEnv = 0.05f
 
     private var delay: Array<FloatArray> = emptyArray()
     private var delayLen = 0
@@ -145,6 +165,9 @@ class FxProcessor : BaseAudioProcessor() {
         pos = 0
         lpA.fill(0f); lpB.fill(0f); hpLp.fill(0f)
         zs = DoubleArray(nFilters * channels * 2)
+        stemZ.fill(0.0)
+        stemMidEnv = 0.05f
+        stemSideEnv = 0.05f
         rmsEnv = 0.2f
 
         val k = sampleRate / 44100.0
@@ -166,28 +189,64 @@ class FxProcessor : BaseAudioProcessor() {
     private fun recompute() {
         applied = version
         val g = gains
+        val dg = deviceGains
+        val devOn = deviceEqActive
         val list = ArrayList<Int>()
         val sr = sampleRate.toDouble()
         var maxBoost = 0f
-        if (eqOn) {
+        if (eqOn || devOn) {
             for (i in 0 until 10) {
                 val f = EqPresets.freqs[i].toDouble()
-                val db = g.getOrElse(i) { 0f }
+                val userDb = if (eqOn) g.getOrElse(i) { 0f } else 0f
+                val devDb = if (devOn) dg.getOrElse(i) { 0f } else 0f
+                val db = (userDb + devDb).coerceIn(-12f, 12f)
                 if (abs(db) < 0.05f || f >= sr * 0.45) continue
                 peaking(i, f, 1.41, db.toDouble(), sr)
                 list += i
                 maxBoost = max(maxBoost, db)
             }
-            if (bassDb > 0.05f) {
+            if (eqOn && bassDb > 0.05f) {
                 lowShelf(10, 105.0, bassDb.toDouble(), sr)
                 list += 10
                 maxBoost = max(maxBoost, bassDb * 0.8f)
             }
         }
         activeFilters = list.toIntArray()
-        val pre = (if (eqOn) preampDb else 0f) - maxBoost * 0.5f
+        val pre = (if (eqOn) preampDb else 0f) + (if (devOn) devicePreampDb else 0f) - maxBoost * 0.45f
         gainLin = 10.0.pow(pre / 20.0).toFloat()
         zs.fill(0.0)
+
+        // Коэффициенты 24 dB/oct фильтров для изоляции дорожек (Голос / Бас / Инструментал)
+        setStemBiquad(0, hp = true, f = 230.0, q = 0.7071, sr = sr)
+        setStemBiquad(1, hp = true, f = 230.0, q = 0.7071, sr = sr)
+        setStemBiquad(2, hp = false, f = 3700.0, q = 0.7071, sr = sr)
+        setStemBiquad(3, hp = false, f = 3700.0, q = 0.7071, sr = sr)
+        setStemBiquad(4, hp = false, f = 175.0, q = 0.7071, sr = sr)
+        setStemBiquad(5, hp = false, f = 175.0, q = 0.7071, sr = sr)
+    }
+
+    private fun setStemBiquad(idx: Int, hp: Boolean, f: Double, q: Double, sr: Double) {
+        val clampedF = f.coerceIn(20.0, sr * 0.44)
+        val w0 = 2.0 * PI * clampedF / sr
+        val cw = cos(w0)
+        val alpha = sin(w0) / (2.0 * q)
+        val a0 = 1.0 + alpha
+        val b0 = (if (hp) (1.0 + cw) else (1.0 - cw)) * 0.5 / a0
+        val b1 = (if (hp) -(1.0 + cw) else (1.0 - cw)) / a0
+        val b2 = b0
+        val a1 = (-2.0 * cw) / a0
+        val a2 = (1.0 - alpha) / a0
+        val o = idx * 5
+        stemCoef[o] = b0; stemCoef[o + 1] = b1; stemCoef[o + 2] = b2; stemCoef[o + 3] = a1; stemCoef[o + 4] = a2
+    }
+
+    private fun runStemFilter(idx: Int, ch: Int, input: Double): Double {
+        val o = idx * 5
+        val zi = (idx * 2 + ch) * 2
+        val y = stemCoef[o] * input + stemZ[zi]
+        stemZ[zi] = stemCoef[o + 1] * input - stemCoef[o + 3] * y + stemZ[zi + 1]
+        stemZ[zi + 1] = stemCoef[o + 2] * input - stemCoef[o + 4] * y
+        return y
     }
 
     private fun peaking(i: Int, f: Double, q: Double, db: Double, sr: Double) {
@@ -245,6 +304,7 @@ class FxProcessor : BaseAudioProcessor() {
         val out = replaceOutputBuffer(frames * ch * outBps)
 
         val m = mode
+        val stem = stemMode
         val filters = activeFilters
         val g = gainLin
         val w = width
@@ -254,7 +314,7 @@ class FxProcessor : BaseAudioProcessor() {
         val stereo = ch == 2
         val dither = hiResDither && !outFl && !directBypass
         val bypass = directBypass || (
-            !dither && m == Mode.NONE && filters.isEmpty() && abs(g - 1f) < 0.001f &&
+            !dither && m == Mode.NONE && stem == StemMode.OFF && filters.isEmpty() && abs(g - 1f) < 0.001f &&
                 (!stereo || (abs(w - 1f) < 0.01f && abs(bal) < 0.01f && !isMono)) && !isNorm
             )
         val ready = delay.size == ch && delayLen > 0
@@ -292,6 +352,7 @@ class FxProcessor : BaseAudioProcessor() {
         val balL = if (bal > 0f) 1f - bal else 1f
         val balR = if (bal < 0f) 1f + bal else 1f
         val normAlpha = 1f / (sr * 0.45f)
+        val stemEnvAlpha = 1f / (sr * 0.018f)
 
         for (fIdx in 0 until frames) {
             if (inFl) {
@@ -379,7 +440,53 @@ class FxProcessor : BaseAudioProcessor() {
                 }
             }
 
-            // ---- 2. эквалайзер ----
+            // ---- 1.5. DSP-изоляция дорожки (Только голос / Только бас / Только инструментал) ----
+            when (stem) {
+                StemMode.BASS -> {
+                    for (c in 0 until minOf(ch, 2)) {
+                        val lp1 = runStemFilter(4, c, frame[c].toDouble())
+                        val lp2 = runStemFilter(5, c, lp1)
+                        frame[c] = (lp2 * 1.45).toFloat()
+                    }
+                }
+                StemMode.VOCAL -> {
+                    val mid = if (stereo) (frame[0] + frame[1]) * 0.5 else frame[0].toDouble()
+                    val side = if (stereo) (frame[0] - frame[1]) * 0.5 else 0.0
+                    // Полосовой 24 дБ/окт (230..3700 Гц) для центрального вокала и бокового канала
+                    val vMid = runStemFilter(3, 0, runStemFilter(2, 0, runStemFilter(1, 0, runStemFilter(0, 0, mid))))
+                    val vSide = if (stereo) runStemFilter(3, 1, runStemFilter(2, 1, runStemFilter(1, 1, runStemFilter(0, 1, side)))) else 0.0
+                    stemMidEnv += stemEnvAlpha * (abs(vMid.toFloat()) - stemMidEnv)
+                    stemSideEnv += stemEnvAlpha * (abs(vSide.toFloat()) - stemSideEnv)
+                    val centerRatio = if (stereo) {
+                        val r = stemMidEnv / (stemMidEnv + stemSideEnv * 1.45f + 1e-4f)
+                        (r * r).coerceIn(0f, 1f)
+                    } else 1f
+                    val vocalOut = (vMid * (0.22 + 1.45 * centerRatio)).toFloat()
+                    for (c in 0 until ch) frame[c] = vocalOut
+                }
+                StemMode.INSTRUMENTAL -> {
+                    if (stereo) {
+                        val mid = (frame[0] + frame[1]) * 0.5
+                        val side = (frame[0] - frame[1]) * 0.5
+                        // Сохраняем плотный бас (LP 175 Гц) + верхний воздух (>3700 Гц) + стерео-инструменты (side)
+                        val midBass = runStemFilter(5, 0, runStemFilter(4, 0, mid))
+                        val midLoMid = runStemFilter(3, 0, runStemFilter(2, 0, mid))
+                        val midAir = (mid - midLoMid) * 0.72
+                        val instSide = side * 1.65
+                        frame[0] = (midBass + midAir + instSide).toFloat()
+                        frame[1] = (midBass + midAir - instSide).toFloat()
+                    } else {
+                        // Для моно-трека оставляем бас + верх, подавляя середину вокала
+                        val x = frame[0].toDouble()
+                        val bassOnly = runStemFilter(5, 0, runStemFilter(4, 0, x))
+                        val hiOnly = x - runStemFilter(3, 0, runStemFilter(2, 0, x))
+                        frame[0] = (bassOnly + hiOnly * 0.85).toFloat()
+                    }
+                }
+                StemMode.OFF -> Unit
+            }
+
+            // ---- 2. эквалайзер (пользовательский + AutoEQ калибровка устройства) ----
             if (filters.isNotEmpty()) {
                 for (c in 0 until ch) {
                     var v = frame[c].toDouble()

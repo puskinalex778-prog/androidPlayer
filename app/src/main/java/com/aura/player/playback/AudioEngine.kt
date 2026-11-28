@@ -37,11 +37,14 @@ import com.aura.player.data.ArtLoader
 import com.aura.player.data.AudioEngineMode
 import com.aura.player.data.AudioQualityMode
 import com.aura.player.data.DecoderPriority
+import com.aura.player.data.DeviceEqCatalog
+import com.aura.player.data.DeviceEqProfile
 import com.aura.player.data.OutputMode
 import com.aura.player.data.Prefs
 import com.aura.player.data.Quality
 import com.aura.player.data.Station
 import com.aura.player.data.StatsStore
+import com.aura.player.data.StemIsolationMode
 import com.aura.player.data.StreamOption
 import com.aura.player.data.StreamResolver
 import com.aura.player.data.Track
@@ -99,6 +102,11 @@ data class SoundState(
     val vizSyncOffsetMs: Int = 0,
     val liveCodec: String = "",
     val liveBitrateKbps: Int = 0,
+    val stemMode: StemIsolationMode = StemIsolationMode.OFF,
+    val deviceEqEnabled: Boolean = true,
+    val deviceEqAuto: Boolean = true,
+    val deviceEqManualId: String = "",
+    val activeDeviceProfile: DeviceEqProfile? = null,
 )
 
 data class OutputState(
@@ -734,6 +742,58 @@ object AudioEngine {
         sound.update { it.copy(vizSyncOffsetMs = clean) }
     }
 
+    fun setStemMode(mode: StemIsolationMode) {
+        sound.update { it.copy(stemMode = mode) }
+        fx.stemMode = when (mode) {
+            StemIsolationMode.OFF -> FxProcessor.StemMode.OFF
+            StemIsolationMode.VOCAL -> FxProcessor.StemMode.VOCAL
+            StemIsolationMode.BASS -> FxProcessor.StemMode.BASS
+            StemIsolationMode.INSTRUMENTAL -> FxProcessor.StemMode.INSTRUMENTAL
+        }
+    }
+
+    fun setDeviceEqEnabled(on: Boolean) {
+        prefs.deviceEqEnabled = on
+        sound.update { it.copy(deviceEqEnabled = on) }
+        resolveDeviceEq()
+    }
+
+    fun setDeviceEqAuto(auto: Boolean) {
+        prefs.deviceEqAuto = auto
+        sound.update { it.copy(deviceEqAuto = auto) }
+        resolveDeviceEq()
+    }
+
+    fun selectDeviceEqManual(profileId: String?) {
+        if (profileId.isNullOrBlank()) {
+            prefs.deviceEqAuto = true
+            sound.update { it.copy(deviceEqAuto = true) }
+        } else {
+            prefs.deviceEqManualId = profileId
+            prefs.deviceEqAuto = false
+            prefs.deviceEqEnabled = true
+            sound.update { it.copy(deviceEqManualId = profileId, deviceEqAuto = false, deviceEqEnabled = true) }
+        }
+        resolveDeviceEq()
+    }
+
+    private fun resolveDeviceEq() {
+        val st = sound.value
+        val out = output.value
+        val isSpk = out.mode == OutputMode.SPEAKER || out.headphonesName == null
+        val profile = if (st.deviceEqAuto) {
+            DeviceEqCatalog.match(out.headphonesName, isSpeaker = isSpk)
+        } else {
+            DeviceEqCatalog.byId(st.deviceEqManualId)
+        }
+        sound.update { it.copy(activeDeviceProfile = profile) }
+        if (st.deviceEqEnabled && profile != null) {
+            fx.setDeviceEq(true, profile.gains.toFloatArray(), profile.preampDb)
+        } else {
+            fx.setDeviceEq(false, FloatArray(10), 0f)
+        }
+    }
+
     private fun applyOffloadPreferences() {
         if (!::player.isInitialized) return
         val s = sound.value
@@ -762,6 +822,7 @@ object AudioEngine {
         setVoice(VoiceEffect.NORMAL); setPitch(0f); setSpeed(1f)
         applyPreset(EqPresets.all.first()); setBass(0f); setPreamp(0f); setWidth(1f)
         setBalance(0f); setMono(false); setNormalize(false); setLimiterEnabled(true)
+        setStemMode(StemIsolationMode.OFF)
     }
 
     private fun pushEq() {
@@ -786,6 +847,9 @@ object AudioEngine {
             decoderPriority = dec,
             limiterOn = prefs.limiterEnabled,
             vizSyncOffsetMs = prefs.vizSyncOffsetMs.coerceIn(-150, 450),
+            deviceEqEnabled = prefs.deviceEqEnabled,
+            deviceEqAuto = prefs.deviceEqAuto,
+            deviceEqManualId = prefs.deviceEqManualId,
         )
         fx.width = prefs.width
         fx.balance = prefs.balance
@@ -795,6 +859,7 @@ object AudioEngine {
         applyQualityToFx()
         applyOffloadPreferences()
         pushEq()
+        resolveDeviceEq()
         applyPlayback()
     }
 
@@ -847,12 +912,14 @@ object AudioEngine {
             )
         }
         applyOutput(forPlaying = player.isPlaying)
+        resolveDeviceEq()
     }
 
     fun setOutputMode(mode: OutputMode) {
         prefs.outputMode = mode.ordinal
         output.update { it.copy(mode = mode) }
         applyOutput(forPlaying = player.isPlaying || player.playWhenReady)
+        resolveDeviceEq()
     }
 
     fun setForceSpeakerCallMode(on: Boolean) {
