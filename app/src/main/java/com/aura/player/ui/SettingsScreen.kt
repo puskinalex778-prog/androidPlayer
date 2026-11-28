@@ -232,6 +232,14 @@ fun SettingsScreen(
                             FlatChip(vt.title, s.visualizer == vt, onClick = { vm.setVisualizer(vt) })
                         }
                     }
+                    if (s.visualizer == VisualizerType.LED_VU) {
+                        Spacer(Modifier.height(10.dp))
+                        FlatSegmentedControl(
+                            options = listOf("Спектр (столбики)", "Искры"),
+                            selectedIndex = if (s.ledDeckSparks) 1 else 0,
+                            onSelect = { vm.setLedDeckSparks(it == 1) },
+                        )
+                    }
                     SectionHeader("Экран плеера по умолчанию")
                     FlatSegmentedControl(
                         options = listOf("Кассета", "Обложка", "Визуал"),

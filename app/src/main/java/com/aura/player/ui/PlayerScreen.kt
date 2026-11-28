@@ -454,7 +454,7 @@ fun FullPlayer(
                             }
                         }
                         else -> {
-                            // Большой полноразмерный частотный визуализатор + переключатель 6 режимов
+                            // Большой полноразмерный частотный визуализатор + переключатель 9 режимов
                             Column(
                                 Modifier.fillMaxSize().padding(vertical = 4.dp),
                                 verticalArrangement = Arrangement.spacedBy(10.dp),
@@ -462,16 +462,40 @@ fun FullPlayer(
                                 FlatCard(
                                     Modifier.weight(1f).fillMaxWidth(),
                                     onClick = { vm.cycleVisualizer() },
-                                    padding = PaddingValues(14.dp),
+                                    padding = PaddingValues(6.dp),
                                 ) {
-                                    AudioVisualizer(
-                                        type = vizType,
-                                        playing = now.isPlaying,
-                                        modifier = Modifier.fillMaxSize(),
-                                        bands = 40,
-                                        large = true,
-                                        onBeat = { beat = it },
-                                    )
+                                    Box(Modifier.fillMaxSize()) {
+                                        AudioVisualizer(
+                                            type = vizType,
+                                            playing = now.isPlaying,
+                                            modifier = Modifier.fillMaxSize(),
+                                            bands = 40,
+                                            large = true,
+                                            ledDeckSparks = settings.ledDeckSparks,
+                                            onBeat = { beat = it },
+                                        )
+                                        if (vizType == VisualizerType.LED_VU) {
+                                            Row(
+                                                Modifier
+                                                    .align(Alignment.TopEnd)
+                                                    .padding(8.dp)
+                                                    .clip(RoundedCornerShape(50))
+                                                    .background(Color(0xCC0D1322))
+                                                    .border(1.dp, c.border, RoundedCornerShape(50))
+                                                    .clickable { vm.setLedDeckSparks(!settings.ledDeckSparks) }
+                                                    .padding(horizontal = 10.dp, vertical = 4.dp),
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            ) {
+                                                Text(
+                                                    if (settings.ledDeckSparks) "Режим: Искры" else "Режим: Спектр",
+                                                    style = MaterialTheme.typography.labelSmall,
+                                                    color = c.accent,
+                                                    fontWeight = FontWeight.Bold,
+                                                )
+                                            }
+                                        }
+                                    }
                                 }
                                 Row(
                                     Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
@@ -594,6 +618,7 @@ fun FullPlayer(
                             modifier = Modifier.fillMaxWidth().height(38.dp),
                             bands = 40,
                             large = false,
+                            ledDeckSparks = settings.ledDeckSparks,
                             onBeat = { beat = it },
                         )
                         Text(

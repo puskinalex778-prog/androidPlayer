@@ -504,8 +504,22 @@ fun VisualizerPickerSheet(vm: MainViewModel, onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surfaceSolid) {
         Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 26.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
             Text("Визуализация частот", style = MaterialTheme.typography.titleLarge, color = c.text)
-            FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(12.dp)) {
-                AudioVisualizer(settings.visualizer, now.isPlaying, Modifier.fillMaxWidth().height(90.dp), bands = 36, large = true)
+            FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(6.dp)) {
+                AudioVisualizer(
+                    type = settings.visualizer,
+                    playing = now.isPlaying,
+                    modifier = Modifier.fillMaxWidth().height(98.dp),
+                    bands = 36,
+                    large = true,
+                    ledDeckSparks = settings.ledDeckSparks,
+                )
+            }
+            if (settings.visualizer == VisualizerType.LED_VU) {
+                FlatSegmentedControl(
+                    options = listOf("LED-дека: Спектр", "LED-дека: Искры"),
+                    selectedIndex = if (settings.ledDeckSparks) 1 else 0,
+                    onSelect = { vm.setLedDeckSparks(it == 1) },
+                )
             }
             VisualizerType.entries.chunked(3).forEach { row ->
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {

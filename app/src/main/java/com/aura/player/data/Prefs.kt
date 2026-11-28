@@ -25,6 +25,7 @@ class Prefs(context: Context) {
     var activeCustomThemeId: String get() = str("customThemeId", ""); set(v) = put("customThemeId", v)
     var uiStyle: String get() = str("uiStyle", "FLAT"); set(v) = put("uiStyle", v)
     var visualizer: String get() = str("visualizer", "BARS"); set(v) = put("visualizer", v)
+    var ledDeckSparks: Boolean get() = sp.getBoolean("ledDeckSparks", false); set(v) = put("ledDeckSparks", v)
     var darkMode: Int get() = sp.getInt("dark", 0); set(v) = put("dark", v)
     // По умолчанию выключено, чтобы выбранная пользователем цветовая схема всегда применялась мгновенно!
     var adaptiveColor: Boolean get() = sp.getBoolean("adaptive_v2", false); set(v) = put("adaptive_v2", v)

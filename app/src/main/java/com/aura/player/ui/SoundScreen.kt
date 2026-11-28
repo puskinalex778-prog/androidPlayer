@@ -113,7 +113,14 @@ fun SoundScreen(
                     padding = PaddingValues(horizontal = 12.dp, vertical = 10.dp),
                 ) {
                     Box(Modifier.fillMaxWidth()) {
-                        AudioVisualizer(uiSettings.visualizer, now.isPlaying, Modifier.fillMaxWidth().height(48.dp), bands = 32, large = false)
+                        AudioVisualizer(
+                            type = uiSettings.visualizer,
+                            playing = now.isPlaying,
+                            modifier = Modifier.fillMaxWidth().height(48.dp),
+                            bands = 32,
+                            large = false,
+                            ledDeckSparks = uiSettings.ledDeckSparks,
+                        )
                         Text(
                             uiSettings.visualizer.title,
                             fontSize = 9.sp,

@@ -31,6 +31,7 @@ data class UiSettings(
     val activeCustomThemeId: String = "",
     val style: UiStyle = UiStyle.FLAT,
     val visualizer: VisualizerType = VisualizerType.BARS,
+    val ledDeckSparks: Boolean = false,
     val darkMode: Int = 0,
     val amoled: Boolean = false,
     val adaptive: Boolean = false,
@@ -89,6 +90,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
             activeCustomThemeId = prefs.activeCustomThemeId,
             style = UiStyle.fromName(prefs.uiStyle),
             visualizer = VisualizerType.fromName(prefs.visualizer),
+            ledDeckSparks = prefs.ledDeckSparks,
             darkMode = prefs.darkMode,
             amoled = prefs.amoled,
             adaptive = prefs.adaptiveColor,
@@ -488,6 +490,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
 
     fun setUiStyle(s: UiStyle) { prefs.uiStyle = s.name; settings.update { it.copy(style = s) } }
     fun setVisualizer(v: VisualizerType) { prefs.visualizer = v.name; settings.update { it.copy(visualizer = v) } }
+    fun setLedDeckSparks(v: Boolean) { prefs.ledDeckSparks = v; settings.update { it.copy(ledDeckSparks = v) } }
     fun cycleVisualizer() { setVisualizer(settings.value.visualizer.next()) }
     fun setDarkMode(m: Int) { prefs.darkMode = m; settings.update { it.copy(darkMode = m) } }
     fun setAmoled(v: Boolean) { prefs.amoled = v; settings.update { it.copy(amoled = v) } }
