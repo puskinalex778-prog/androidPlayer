@@ -19,18 +19,24 @@ import androidx.media3.common.MimeTypes
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.PlaybackParameters
 import androidx.media3.common.Player
+import androidx.media3.common.TrackSelectionParameters
+import androidx.media3.common.Tracks
 import androidx.media3.common.audio.AudioProcessor
 import androidx.media3.datasource.DefaultDataSource
 import androidx.media3.datasource.DefaultHttpDataSource
+import androidx.media3.exoplayer.DefaultLoadControl
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
 import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
+import androidx.media3.extractor.DefaultExtractorsFactory
 import androidx.media3.extractor.metadata.icy.IcyInfo
 import androidx.media3.extractor.metadata.id3.TextInformationFrame
 import com.aura.player.data.ArtLoader
+import com.aura.player.data.AudioEngineMode
 import com.aura.player.data.AudioQualityMode
+import com.aura.player.data.DecoderPriority
 import com.aura.player.data.OutputMode
 import com.aura.player.data.Prefs
 import com.aura.player.data.Quality
@@ -87,6 +93,12 @@ data class SoundState(
     val smoothFade: Boolean = true,
     val autoCrossfade: Boolean = false,
     val quality: AudioQualityMode = AudioQualityMode.STUDIO_FLOAT,
+    val engineMode: AudioEngineMode = AudioEngineMode.AUDIOTRACK_STD,
+    val decoderPriority: DecoderPriority = DecoderPriority.AUTO,
+    val limiterOn: Boolean = true,
+    val vizSyncOffsetMs: Int = 0,
+    val liveCodec: String = "",
+    val liveBitrateKbps: Int = 0,
 )
 
 data class OutputState(
@@ -151,6 +163,13 @@ object AudioEngine {
         app = context.applicationContext
         prefs = Prefs(app)
 
+        val decPref = DecoderPriority.of(prefs.decoderPriority)
+        val extMode = when (decPref) {
+            DecoderPriority.HARDWARE -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF
+            DecoderPriority.SOFTWARE -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_PREFER
+            DecoderPriority.AUTO -> DefaultRenderersFactory.EXTENSION_RENDERER_MODE_ON
+        }
+
         val renderers = object : DefaultRenderersFactory(app) {
             override fun buildAudioSink(
                 context: Context,
@@ -159,16 +178,25 @@ object AudioEngine {
             ): AudioSink = DefaultAudioSink.Builder(context)
                 .setAudioProcessors(arrayOf<AudioProcessor>(fx))
                 .build()
-        }.setExtensionRendererMode(DefaultRenderersFactory.EXTENSION_RENDERER_MODE_OFF)
+        }.setExtensionRendererMode(extMode)
+            .setEnableDecoderFallback(true)
 
         val http = DefaultHttpDataSource.Factory()
             .setAllowCrossProtocolRedirects(true)
-            .setUserAgent("Mozilla/5.0 (Linux; Android 14) AuraPlayer/1.3")
+            .setUserAgent("Mozilla/5.0 (Linux; Android 14) PoliSANPlayer/1.6")
             .setConnectTimeoutMs(15000)
             .setReadTimeoutMs(20000)
 
+        val extractors = DefaultExtractorsFactory()
+            .setConstantBitrateSeekingEnabled(true)
+
+        val loadControl = DefaultLoadControl.Builder()
+            .setBufferDurationsMs(6_000, 25_000, 450, 1_000)
+            .build()
+
         player = ExoPlayer.Builder(app, renderers)
-            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(app, http)))
+            .setLoadControl(loadControl)
+            .setMediaSourceFactory(DefaultMediaSourceFactory(DefaultDataSource.Factory(app, http), extractors))
             .setAudioAttributes(mediaAttributes(), true)
             .setHandleAudioBecomingNoisy(true)
             .setWakeMode(C.WAKE_MODE_NETWORK)
@@ -193,16 +221,59 @@ object AudioEngine {
         .setContentType(C.AUDIO_CONTENT_TYPE_SPEECH)
         .build()
 
-    /** Живая техническая строка потока (как в AIMP: «48.0 kHz · 32-bit DSP · Стерео») */
+    /** Живая техническая строка потока (как в AIMP: «MP3 · 320 kbps · 48.0 kHz · 32-bit DSP · Стерео») */
     fun techSummary(): String {
+        val s = sound.value
         val khz = "%.1f kHz".format(fx.liveSampleRate / 1000f)
-        val bits = sound.value.quality.badge
+        val bits = s.quality.badge
         val ch = when {
-            sound.value.mono || fx.liveChannels == 1 -> "Моно"
+            s.mono || fx.liveChannels == 1 -> "Моно"
             fx.liveChannels == 2 -> "Стерео"
             else -> "${fx.liveChannels} кан."
         }
-        return "$khz · $bits · $ch"
+        return listOfNotNull(
+            s.liveCodec.takeIf { it.isNotBlank() },
+            s.liveBitrateKbps.takeIf { it > 0 }?.let { "$it kbps" },
+            khz,
+            bits,
+            ch,
+            s.engineMode.badge,
+        ).joinToString(" · ")
+    }
+
+    /** Компенсация задержки AudioTrack + Bluetooth для точной синхронизации визуализаторов со звуком. */
+    fun effectiveVizDelayMs(): Int {
+        val st = sound.value
+        val out = output.value
+        val baseSink = if (st.engineMode == AudioEngineMode.AUDIOTRACK_LOW_LATENCY) 90 else 155
+        val hp = out.headphonesName
+        val btLatency = if (hp != null && out.mode != OutputMode.SPEAKER) {
+            if (hp.contains("Провод", true) || hp.contains("USB", true)) 15 else 160
+        } else 0
+        return (baseSink + btLatency + st.vizSyncOffsetMs).coerceIn(0, 620)
+    }
+
+    /** Освобождает файл перед физическим удалением с устройства. */
+    fun stopIfPlaying(uri: String) {
+        if (!::player.isInitialized) return
+        val cur = now.value.track
+        if (cur?.uri == uri) {
+            if (player.hasNextMediaItem()) {
+                player.seekToNextMediaItem()
+            } else {
+                player.stop()
+                player.clearMediaItems()
+                fx.clearRing()
+            }
+        }
+        val idxInQueue = queueTracks.indexOfFirst { it.uri == uri }
+        if (idxInQueue >= 0) {
+            queueTracks = queueTracks.filterNot { it.uri == uri }
+            if (idxInQueue < player.mediaItemCount && cur?.uri != uri) {
+                runCatching { player.removeMediaItem(idxInQueue) }
+            }
+        }
+        refresh()
     }
 
     // ======================= Локальные треки =======================
@@ -450,6 +521,40 @@ object AudioEngine {
     private val listener = object : Player.Listener {
         override fun onEvents(p: Player, events: Player.Events) = refresh()
 
+        override fun onTracksChanged(tracks: Tracks) {
+            var codec = ""
+            var brKbps = 0
+            for (group in tracks.groups) {
+                if (group.type == C.TRACK_TYPE_AUDIO && group.isSelected) {
+                    for (i in 0 until group.length) {
+                        if (group.isTrackSelected(i)) {
+                            val fmt = group.getTrackFormat(i)
+                            val mime = (fmt.sampleMimeType ?: "").lowercase()
+                            codec = when {
+                                mime.contains("mpeg") -> "MP3"
+                                mime.contains("flac") -> "FLAC"
+                                mime.contains("opus") -> "OPUS"
+                                mime.contains("vorbis") -> "OGG Vorbis"
+                                mime.contains("mp4a") || mime.contains("aac") -> "AAC"
+                                mime.contains("raw") || mime.contains("wav") -> "PCM WAV"
+                                mime.contains("alac") -> "ALAC"
+                                mime.contains("eac3") -> "E-AC-3"
+                                mime.contains("ac3") -> "AC-3"
+                                mime.isNotBlank() -> mime.substringAfter('/').uppercase()
+                                else -> ""
+                            }
+                            val rawBr = if (fmt.bitrate > 0) fmt.bitrate else fmt.averageBitrate
+                            if (rawBr > 0) brKbps = (rawBr / 1000).coerceAtLeast(1)
+                            break
+                        }
+                    }
+                }
+            }
+            if (codec.isNotBlank() || brKbps > 0) {
+                sound.update { it.copy(liveCodec = codec, liveBitrateKbps = brKbps) }
+            }
+        }
+
         override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
             if (sleepAfterTrack.value && reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO) {
                 sleepAfterTrack.value = false
@@ -603,6 +708,48 @@ object AudioEngine {
         prefs.audioQuality = q.ordinal
         sound.update { it.copy(quality = q) }
         applyQualityToFx()
+        applyOffloadPreferences()
+    }
+
+    fun setAudioEngineMode(m: AudioEngineMode) {
+        prefs.audioEngineMode = m.ordinal
+        sound.update { it.copy(engineMode = m) }
+        applyOffloadPreferences()
+    }
+
+    fun setDecoderPriority(p: DecoderPriority) {
+        prefs.decoderPriority = p.ordinal
+        sound.update { it.copy(decoderPriority = p) }
+    }
+
+    fun setLimiterEnabled(on: Boolean) {
+        prefs.limiterEnabled = on
+        fx.limiterEnabled = on
+        sound.update { it.copy(limiterOn = on) }
+    }
+
+    fun setVizSyncOffsetMs(ms: Int) {
+        val clean = ms.coerceIn(-150, 450)
+        prefs.vizSyncOffsetMs = clean
+        sound.update { it.copy(vizSyncOffsetMs = clean) }
+    }
+
+    private fun applyOffloadPreferences() {
+        if (!::player.isInitialized) return
+        val s = sound.value
+        val wantOffload = s.engineMode == AudioEngineMode.AUDIO_OFFLOAD && s.quality == AudioQualityMode.DIRECT_PURE
+        runCatching {
+            val offloadPrefs = TrackSelectionParameters.AudioOffloadPreferences.Builder()
+                .setAudioOffloadMode(
+                    if (wantOffload) TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_ENABLED
+                    else TrackSelectionParameters.AudioOffloadPreferences.AUDIO_OFFLOAD_MODE_DISABLED
+                )
+                .build()
+            player.trackSelectionParameters = player.trackSelectionParameters
+                .buildUpon()
+                .setAudioOffloadPreferences(offloadPrefs)
+                .build()
+        }
     }
 
     private fun applyQualityToFx() {
@@ -614,7 +761,7 @@ object AudioEngine {
     fun resetSound() {
         setVoice(VoiceEffect.NORMAL); setPitch(0f); setSpeed(1f)
         applyPreset(EqPresets.all.first()); setBass(0f); setPreamp(0f); setWidth(1f)
-        setBalance(0f); setMono(false); setNormalize(false)
+        setBalance(0f); setMono(false); setNormalize(false); setLimiterEnabled(true)
     }
 
     private fun pushEq() {
@@ -627,18 +774,26 @@ object AudioEngine {
         val v = runCatching { VoiceEffect.valueOf(prefs.voice) }.getOrDefault(VoiceEffect.NORMAL)
         val gains = prefs.eqGains.split(',').mapNotNull { it.toFloatOrNull() }.takeIf { it.size == 10 } ?: List(10) { 0f }
         val q = AudioQualityMode.of(prefs.audioQuality)
+        val eng = AudioEngineMode.of(prefs.audioEngineMode)
+        val dec = DecoderPriority.of(prefs.decoderPriority)
         sound.value = SoundState(
             voice = v, pitchSemis = prefs.pitchSemis, speed = prefs.speed, eqOn = prefs.eqEnabled,
             gains = gains, preset = prefs.eqPreset, bass = prefs.bass, width = prefs.width, preamp = prefs.preamp,
             balance = prefs.balance, mono = prefs.mono, normalize = prefs.normalize,
             smoothFade = prefs.smoothFade, autoCrossfade = prefs.autoCrossfade,
             quality = q,
+            engineMode = eng,
+            decoderPriority = dec,
+            limiterOn = prefs.limiterEnabled,
+            vizSyncOffsetMs = prefs.vizSyncOffsetMs.coerceIn(-150, 450),
         )
         fx.width = prefs.width
         fx.balance = prefs.balance
         fx.mono = prefs.mono
         fx.normalize = prefs.normalize
+        fx.limiterEnabled = prefs.limiterEnabled
         applyQualityToFx()
+        applyOffloadPreferences()
         pushEq()
         applyPlayback()
     }

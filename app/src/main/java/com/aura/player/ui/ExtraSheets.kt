@@ -52,7 +52,9 @@ import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.BookmarkAdd
 import androidx.compose.material.icons.rounded.Check
 import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.DirectionsCar
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Equalizer
@@ -121,6 +123,7 @@ fun dockActionIcon(action: PlayerDockAction, outputMode: OutputMode = OutputMode
     PlayerDockAction.SPEED -> Icons.Rounded.Speed
     PlayerDockAction.VISUALIZER -> Icons.Rounded.AutoAwesome
     PlayerDockAction.BOOKMARK -> Icons.Rounded.BookmarkAdd
+    PlayerDockAction.NOTE -> Icons.Rounded.Description
     PlayerDockAction.CAR_MODE -> Icons.Rounded.DirectionsCar
     PlayerDockAction.INFO -> Icons.Rounded.Info
 }
@@ -556,17 +559,28 @@ fun VisualizerPickerSheet(vm: MainViewModel, onDismiss: () -> Unit) {
 fun TrackInfoSheet(
     vm: MainViewModel,
     track: Track,
+    onDeletePhysical: (() -> Unit)? = null,
     onDismiss: () -> Unit,
 ) {
     val c = LocalAura.current
     val ctx = LocalContext.current
     val stats by AudioEngine.stats.collectAsState()
+    val notes by vm.trackNotes.collectAsState()
+    val noteText = notes[track.uri].orEmpty()
     val stat = remember(stats, track.id) { stats.firstOrNull { it.id == track.id } }
     val sizeBytes = remember(track.uri) { querySizeBytes(ctx, Uri.parse(track.uri)) }
     var renameOpen by remember { mutableStateOf(false) }
+    var noteOpen by remember { mutableStateOf(false) }
 
     ModalBottomSheet(onDismissRequest = onDismiss, containerColor = c.surfaceSolid) {
-        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp).padding(bottom = 24.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+        Column(
+            Modifier
+                .fillMaxWidth()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 16.dp)
+                .padding(bottom = 24.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 ArtThumb(track.uri, track.title, size = 56.dp)
                 Column(Modifier.weight(1f).padding(start = 12.dp)) {
@@ -587,11 +601,58 @@ fun TrackInfoSheet(
                 }
             }
 
+            FlatCard(
+                Modifier.fillMaxWidth(),
+                color = if (noteText.isNotBlank()) c.accentSoft else c.surface2,
+                onClick = { noteOpen = true },
+                padding = PaddingValues(12.dp),
+            ) {
+                Row(verticalAlignment = Alignment.Top, horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Icon(Icons.Rounded.Description, null, tint = c.accent, modifier = Modifier.size(20.dp))
+                    Column(Modifier.weight(1f)) {
+                        Text(
+                            if (noteText.isNotBlank()) "Заметка к файлу" else "Добавить заметку к файлу",
+                            style = MaterialTheme.typography.titleSmall,
+                            color = c.text,
+                        )
+                        Text(
+                            noteText.ifBlank { "Нажмите, чтобы записать комментарий, идею или пометку к треку" },
+                            style = MaterialTheme.typography.bodySmall,
+                            color = if (noteText.isNotBlank()) c.text else c.textDim,
+                            maxLines = 4,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                    }
+                }
+            }
+
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                 FlatTonalButton("Переименовать", Icons.Rounded.Edit, { renameOpen = true }, Modifier.weight(1f))
                 FlatPrimaryButton("Поделиться", Icons.Rounded.Share, {
                     shareAudio(ctx, track)
                 }, Modifier.weight(1f))
+            }
+
+            if (onDeletePhysical != null) {
+                FlatCard(
+                    Modifier.fillMaxWidth(),
+                    color = c.danger.copy(alpha = 0.12f),
+                    onClick = {
+                        onDismiss()
+                        onDeletePhysical()
+                    },
+                    padding = PaddingValues(vertical = 12.dp, horizontal = 14.dp),
+                ) {
+                    Row(
+                        Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.Center,
+                    ) {
+                        Icon(Icons.Rounded.DeleteForever, null, tint = c.danger, modifier = Modifier.size(19.dp))
+                        Spacer(Modifier.width(8.dp))
+                        Text("Удалить файл с устройства", style = MaterialTheme.typography.titleSmall, color = c.danger)
+                    }
+                }
             }
         }
     }
@@ -607,6 +668,98 @@ fun TrackInfoSheet(
             },
         )
     }
+
+    if (noteOpen) {
+        TrackNoteDialog(
+            track = track,
+            initialNote = noteText,
+            onDismiss = { noteOpen = false },
+            onSave = { txt ->
+                vm.saveTrackNote(track.uri, txt)
+                noteOpen = false
+            },
+        )
+    }
+}
+
+@Composable
+fun TrackNoteDialog(
+    track: Track,
+    initialNote: String,
+    onDismiss: () -> Unit,
+    onSave: (String) -> Unit,
+) {
+    val c = LocalAura.current
+    val ctx = LocalContext.current
+    var text by remember(track.uri, initialNote) { mutableStateOf(initialNote) }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.surfaceSolid,
+        title = {
+            Column {
+                Text("Заметка к файлу", color = c.text)
+                Text(track.title, style = MaterialTheme.typography.bodySmall, color = c.textDim, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                OutlinedTextField(
+                    value = text,
+                    onValueChange = { text = it },
+                    placeholder = { Text("Например: классный бит с 1:20, для монтажа, текст…") },
+                    minLines = 3,
+                    maxLines = 7,
+                    modifier = Modifier.fillMaxWidth(),
+                )
+                if (text.isNotBlank()) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        TextButton(onClick = {
+                            runCatching {
+                                val intent = Intent(Intent.ACTION_SEND).apply {
+                                    type = "text/plain"
+                                    putExtra(Intent.EXTRA_SUBJECT, "Заметка: ${track.title}")
+                                    putExtra(Intent.EXTRA_TEXT, "${track.title} — ${track.artist}\n\n$text")
+                                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                                }
+                                ctx.startActivity(Intent.createChooser(intent, "Поделиться заметкой"))
+                            }
+                        }) { Text("Поделиться", color = c.accent) }
+                        TextButton(onClick = { text = "" }) { Text("Очистить", color = c.danger) }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = { onSave(text) }) { Text("Сохранить") } },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+    )
+}
+
+@Composable
+fun ConfirmPhysicalDeleteDialog(
+    track: Track,
+    onDismiss: () -> Unit,
+    onConfirm: () -> Unit,
+) {
+    val c = LocalAura.current
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        containerColor = c.surfaceSolid,
+        title = { Text("Удалить файл с устройства?", color = c.danger) },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Text("«${track.title}»", style = MaterialTheme.typography.titleSmall, color = c.text)
+                Text(
+                    "Аудиофайл будет безвозвратно удалён из памяти ${if (track.onSdCard) "SD-карты" else "телефона"}, а также из всех плейлистов. Отменить это действие нельзя.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = c.textDim,
+                )
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = onConfirm) { Text("Удалить навсегда", color = c.danger, fontWeight = FontWeight.Bold) }
+        },
+        dismissButton = { TextButton(onClick = onDismiss) { Text("Отмена") } },
+    )
 }
 
 @Composable

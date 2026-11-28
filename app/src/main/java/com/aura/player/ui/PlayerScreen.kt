@@ -108,6 +108,7 @@ import androidx.compose.ui.unit.sp
 import androidx.media3.common.Player
 import com.aura.player.data.OutputMode
 import com.aura.player.data.PlayerDockAction
+import com.aura.player.data.Track
 import com.aura.player.playback.AudioEngine
 import com.aura.player.playback.NowPlaying
 import kotlinx.coroutines.delay
@@ -252,6 +253,7 @@ fun FullPlayer(
     onOpenPlaylists: () -> Unit = {},
     onOpenCarMode: () -> Unit = {},
     onCustomizeDock: () -> Unit = {},
+    onDeletePhysical: (Track) -> Unit = {},
 ) {
     val c = LocalAura.current
     val now by AudioEngine.now.collectAsState()
@@ -262,6 +264,7 @@ fun FullPlayer(
     val favs by vm.favorites.collectAsState()
     val favTracks by vm.favoriteTracks.collectAsState()
     val allBookmarks by vm.bookmarks.collectAsState()
+    val trackNotes by vm.trackNotes.collectAsState()
     val sleepAt by AudioEngine.sleepAt.collectAsState()
     val sleepAfterTrack by AudioEngine.sleepAfterTrack.collectAsState()
     val artBmp by AudioEngine.art.collectAsState()
@@ -277,6 +280,8 @@ fun FullPlayer(
     var showVizPicker by remember { mutableStateOf(false) }
     var showBookmarks by remember { mutableStateOf(false) }
     var showTrackInfo by remember { mutableStateOf(false) }
+    var showNote by remember { mutableStateOf(false) }
+    var deleteConfirmTrack by remember { mutableStateOf<Track?>(null) }
     var beat by remember { mutableFloatStateOf(0f) }
     var dismissDragY by remember { mutableFloatStateOf(0f) }
     val animDismissY by animateFloatAsState(dismissDragY, spring(stiffness = 700f), label = "dismissY")
@@ -736,6 +741,7 @@ fun FullPlayer(
                         }
                         PlayerDockAction.VISUALIZER -> action.title to (stage == 2)
                         PlayerDockAction.BOOKMARK -> action.title to hasBookmarks
+                        PlayerDockAction.NOTE -> action.title to (trackUri != null && !trackNotes[trackUri].isNullOrBlank())
                         PlayerDockAction.CAR_MODE -> action.title to false
                         PlayerDockAction.INFO -> action.title to false
                     }
@@ -758,6 +764,7 @@ fun FullPlayer(
                                 PlayerDockAction.SPEED -> showSpeed = true
                                 PlayerDockAction.VISUALIZER -> { vm.setPlayerStage(2); showVizPicker = true }
                                 PlayerDockAction.BOOKMARK -> showBookmarks = true
+                                PlayerDockAction.NOTE -> if (now.track != null) showNote = true else showLyrics = true
                                 PlayerDockAction.CAR_MODE -> onOpenCarMode()
                                 PlayerDockAction.INFO -> if (now.track != null) showTrackInfo = true else showOutput = true
                             }
@@ -787,8 +794,34 @@ fun FullPlayer(
     if (showBookmarks) BookmarksSheet(vm = vm, track = now.track, posMs = pos, onDismiss = { showBookmarks = false })
     if (showTrackInfo) {
         now.track?.let { tr ->
-            TrackInfoSheet(vm = vm, track = tr, onDismiss = { showTrackInfo = false })
+            TrackInfoSheet(
+                vm = vm,
+                track = tr,
+                onDeletePhysical = { deleteConfirmTrack = tr },
+                onDismiss = { showTrackInfo = false },
+            )
         }
+    }
+    if (showNote) {
+        now.track?.let { tr ->
+            TrackNoteDialog(
+                track = tr,
+                initialNote = trackNotes[tr.uri].orEmpty(),
+                onDismiss = { showNote = false },
+                onSave = { txt -> vm.saveTrackNote(tr.uri, txt); showNote = false },
+            )
+        }
+    }
+    deleteConfirmTrack?.let { tr ->
+        ConfirmPhysicalDeleteDialog(
+            track = tr,
+            onDismiss = { deleteConfirmTrack = null },
+            onConfirm = {
+                deleteConfirmTrack = null
+                onClose()
+                onDeletePhysical(tr)
+            },
+        )
     }
 }
 

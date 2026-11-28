@@ -31,7 +31,9 @@ import androidx.compose.material.icons.rounded.CheckBox
 import androidx.compose.material.icons.rounded.CheckBoxOutlineBlank
 import androidx.compose.material.icons.rounded.ChevronRight
 import androidx.compose.material.icons.rounded.CreateNewFolder
+import androidx.compose.material.icons.rounded.DeleteForever
 import androidx.compose.material.icons.rounded.DeleteOutline
+import androidx.compose.material.icons.rounded.Description
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.Favorite
 import androidx.compose.material.icons.rounded.FavoriteBorder
@@ -102,11 +104,13 @@ fun LibraryScreen(
     onAddFolder: (playlistId: String?) -> Unit,
     onOpenDevicePicker: () -> Unit,
     bottomPadding: Int,
+    onDeletePhysical: (Track) -> Unit = {},
 ) {
     val c = LocalAura.current
     val tracks by vm.tracks.collectAsState()
     val playlists by vm.playlists.collectAsState()
     val favTracks by vm.favoriteTracks.collectAsState()
+    val notes by vm.trackNotes.collectAsState()
     val addProgress by vm.addProgress.collectAsState()
     val now by AudioEngine.now.collectAsState()
     val sort by vm.sort.collectAsState()
@@ -125,19 +129,22 @@ fun LibraryScreen(
     var pickExistingForPl by remember { mutableStateOf<Playlist?>(null) }
     var renameTrack by remember { mutableStateOf<Track?>(null) }
     var infoTrack by remember { mutableStateOf<Track?>(null) }
+    var noteTrack by remember { mutableStateOf<Track?>(null) }
+    var deleteConfirmTrack by remember { mutableStateOf<Track?>(null) }
 
     val openPlaylist = remember(playlists, openPlaylistId) { playlists.firstOrNull { it.id == openPlaylistId } }
     val sdCount = remember(tracks) { tracks.count { it.onSdCard } }
     val favCount = remember(tracks, favTracks) { tracks.count { it.uri in favTracks } }
 
-    val filtered = remember(tracks, query, onlySd, onlyFav, favTracks) {
+    val filtered = remember(tracks, query, onlySd, onlyFav, favTracks, notes) {
         tracks.filter { t ->
             (!onlySd || t.onSdCard) && (!onlyFav || t.uri in favTracks) && (
                 query.isBlank() ||
                     t.title.contains(query, true) ||
                     t.artist.contains(query, true) ||
                     t.album.contains(query, true) ||
-                    t.folder.contains(query, true)
+                    t.folder.contains(query, true) ||
+                    (notes[t.uri]?.contains(query, true) == true)
                 )
         }
     }
@@ -267,11 +274,14 @@ fun LibraryScreen(
                             t = t,
                             playing = now.track?.uri == t.uri,
                             liked = t.uri in favTracks,
+                            note = notes[t.uri],
                             onToggleLike = { vm.toggleFavoriteTrack(t.uri) },
                             onClick = { vm.play(plTracks, t) },
                             onAddToPlaylist = { addTrackToPl = t },
+                            onNote = { noteTrack = t },
                             onRename = { renameTrack = t },
                             onInfo = { infoTrack = t },
+                            onDeletePhysical = { deleteConfirmTrack = t },
                             removeLabel = "Убрать из плейлиста",
                             onRemove = { vm.removeTrackFromPlaylist(openPlaylist.id, t.uri) },
                         )
@@ -415,11 +425,14 @@ fun LibraryScreen(
                             t = t,
                             playing = now.track?.uri == t.uri,
                             liked = t.uri in favTracks,
+                            note = notes[t.uri],
                             onToggleLike = { vm.toggleFavoriteTrack(t.uri) },
                             onClick = { vm.play(shown, t) },
                             onAddToPlaylist = { addTrackToPl = t },
+                            onNote = { noteTrack = t },
                             onRename = { renameTrack = t },
                             onInfo = { infoTrack = t },
+                            onDeletePhysical = { deleteConfirmTrack = t },
                             onRemove = { vm.remove(t) },
                         )
                         HorizontalDivider(thickness = 1.dp, color = c.border.copy(alpha = 0.55f))
@@ -485,7 +498,31 @@ fun LibraryScreen(
         TrackInfoSheet(
             vm = vm,
             track = tr,
+            onDeletePhysical = { deleteConfirmTrack = tr },
             onDismiss = { infoTrack = null },
+        )
+    }
+
+    noteTrack?.let { tr ->
+        TrackNoteDialog(
+            track = tr,
+            initialNote = notes[tr.uri].orEmpty(),
+            onDismiss = { noteTrack = null },
+            onSave = { txt ->
+                vm.saveTrackNote(tr.uri, txt)
+                noteTrack = null
+            },
+        )
+    }
+
+    deleteConfirmTrack?.let { tr ->
+        ConfirmPhysicalDeleteDialog(
+            track = tr,
+            onDismiss = { deleteConfirmTrack = null },
+            onConfirm = {
+                deleteConfirmTrack = null
+                onDeletePhysical(tr)
+            },
         )
     }
 
@@ -708,13 +745,16 @@ fun TrackRow(
     t: Track,
     playing: Boolean,
     liked: Boolean,
+    note: String? = null,
     onToggleLike: () -> Unit,
     onClick: () -> Unit,
     onAddToPlaylist: () -> Unit,
     onRemove: () -> Unit,
     removeLabel: String = "Убрать из списка",
+    onNote: (() -> Unit)? = null,
     onRename: (() -> Unit)? = null,
     onInfo: (() -> Unit)? = null,
+    onDeletePhysical: (() -> Unit)? = null,
 ) {
     val c = LocalAura.current
     var menu by remember { mutableStateOf(false) }
@@ -760,6 +800,27 @@ fun TrackRow(
                     overflow = TextOverflow.Ellipsis,
                 )
             }
+            if (!note.isNullOrBlank()) {
+                Spacer(Modifier.height(3.dp))
+                Row(
+                    Modifier
+                        .clip(RoundedCornerShape(6.dp))
+                        .background(c.accentSoft)
+                        .clickable(enabled = onNote != null) { onNote?.invoke() }
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(Icons.Rounded.Description, null, tint = c.accent, modifier = Modifier.size(11.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text(
+                        note.replace('\n', ' '),
+                        fontSize = 11.sp,
+                        color = c.accent,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
         }
         if (liked) {
             Icon(Icons.Rounded.Favorite, null, tint = c.danger, modifier = Modifier.size(15.dp).padding(end = 2.dp))
@@ -792,6 +853,13 @@ fun TrackRow(
                     leadingIcon = { Icon(Icons.AutoMirrored.Rounded.PlaylistAdd, null) },
                     onClick = { menu = false; onAddToPlaylist() },
                 )
+                if (onNote != null) {
+                    DropdownMenuItem(
+                        text = { Text(if (note.isNullOrBlank()) "Добавить заметку" else "Изменить заметку") },
+                        leadingIcon = { Icon(Icons.Rounded.Description, null, tint = c.accent) },
+                        onClick = { menu = false; onNote() },
+                    )
+                }
                 DropdownMenuItem(text = { Text("Играть следующим") }, onClick = { AudioEngine.playNext(t); menu = false })
                 DropdownMenuItem(text = { Text("Добавить в очередь") }, onClick = { AudioEngine.addToQueue(t); menu = false })
                 if (onRename != null) {
@@ -809,7 +877,14 @@ fun TrackRow(
                     )
                 }
                 HorizontalDivider(color = c.border)
-                DropdownMenuItem(text = { Text(removeLabel, color = c.danger) }, onClick = { onRemove(); menu = false })
+                DropdownMenuItem(text = { Text(removeLabel, color = c.textDim) }, onClick = { onRemove(); menu = false })
+                if (onDeletePhysical != null) {
+                    DropdownMenuItem(
+                        text = { Text("Удалить файл с устройства", color = c.danger) },
+                        leadingIcon = { Icon(Icons.Rounded.DeleteForever, null, tint = c.danger) },
+                        onClick = { menu = false; onDeletePhysical() },
+                    )
+                }
             }
         }
     }
@@ -985,17 +1060,44 @@ fun DeviceFolderPickerSheet(
     val targetPl by vm.pickerTargetPlaylistId.collectAsState()
 
     var mode by remember(initialMode) { mutableStateOf(initialMode) }
+    var storageFilter by remember { mutableStateOf(0) } // 0 = Все (Телефон + SD), 1 = Телефон, 2 = SD-карта
     var search by remember { mutableStateOf("") }
     var activeFolderKey by remember { mutableStateOf<String?>(null) }
     var selectedUris by remember { mutableStateOf(setOf<String>()) }
     var selectedFolderKeys by remember { mutableStateOf(setOf<String>()) }
 
-    val visibleTracks = remember(allTracks, folders, activeFolderKey, search) {
-        val base = if (activeFolderKey == null) allTracks
-        else folders.firstOrNull { it.key == activeFolderKey }?.tracks ?: emptyList()
+    val phoneCount = remember(allTracks) { allTracks.count { !it.onSdCard } }
+    val sdCount = remember(allTracks) { allTracks.count { it.onSdCard } }
+
+    val storageFolders = remember(folders, storageFilter) {
+        when (storageFilter) {
+            1 -> folders.filter { !it.onSdCard }
+            2 -> folders.filter { it.onSdCard }
+            else -> folders
+        }
+    }
+
+    val visibleFolders = remember(storageFolders, search) {
+        if (search.isBlank()) storageFolders
+        else storageFolders.filter { f ->
+            f.name.contains(search, true) || f.tracks.any { it.title.contains(search, true) || it.artist.contains(search, true) }
+        }
+    }
+
+    val visibleTracks = remember(allTracks, storageFolders, storageFilter, activeFolderKey, search) {
+        val byStorage = when (storageFilter) {
+            1 -> allTracks.filter { !it.onSdCard }
+            2 -> allTracks.filter { it.onSdCard }
+            else -> allTracks
+        }
+        val base = if (activeFolderKey == null) byStorage
+        else storageFolders.firstOrNull { it.key == activeFolderKey }?.tracks ?: byStorage
         if (search.isBlank()) base
         else base.filter {
-            it.title.contains(search, true) || it.artist.contains(search, true) || it.folder.contains(search, true)
+            it.title.contains(search, true) ||
+                it.artist.contains(search, true) ||
+                it.album.contains(search, true) ||
+                it.folder.contains(search, true)
         }
     }
 
@@ -1009,7 +1111,7 @@ fun DeviceFolderPickerSheet(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) {
                     Text(if (mode == 0) "Добавить песни" else "Выбрать папки", style = MaterialTheme.typography.titleLarge, color = c.text)
-                    Text("Только музыка: MP3, FLAC, WAV, OGG, OPUS, AAC", style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                    Text("Телефон + SD-карта · MP3, FLAC, WAV, OGG, OPUS, AAC", style = MaterialTheme.typography.bodySmall, color = c.textDim)
                 }
                 IconButton(onClick = { onDismiss(); onOpenSdFolder() }) {
                     Icon(Icons.Rounded.CreateNewFolder, "Открыть папку SD", tint = c.accent)
@@ -1025,13 +1127,13 @@ fun DeviceFolderPickerSheet(
                 selectedIndex = mode,
                 onSelect = { mode = it },
             )
-            Spacer(Modifier.height(10.dp))
+            Spacer(Modifier.height(8.dp))
 
             if (loading) {
                 Box(Modifier.fillMaxWidth().height(240.dp), contentAlignment = Alignment.Center) {
                     Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(10.dp)) {
                         CircularProgressIndicator(color = c.accent)
-                        Text("Ищу музыкальные файлы…", color = c.textDim, style = MaterialTheme.typography.bodyMedium)
+                        Text("Ищу музыкальные файлы на телефоне и SD-карте…", color = c.textDim, style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             } else if (allTracks.isEmpty()) {
@@ -1043,108 +1145,157 @@ fun DeviceFolderPickerSheet(
                 ) {
                     FlatTonalButton("Открыть папку на SD-карте", Icons.Rounded.SdCard, { onDismiss(); onOpenSdFolder() })
                 }
-            } else if (mode == 0) {
-                // ---- Режим выбора конкретных песен (БЕЗ картинок и m4a/mp4) ----
-                FlatSearchField(search, { search = it }, "Поиск песни или папки…")
-                Spacer(Modifier.height(8.dp))
+            } else {
+                // Переключатель памяти: Все (Телефон + SD) | Телефон | SD-карта
                 Row(
-                    Modifier.horizontalScroll(rememberScrollState()),
+                    Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                 ) {
-                    FlatChip("Все", activeFolderKey == null, onClick = { activeFolderKey = null })
-                    folders.forEach { f ->
-                        FlatChip(
-                            text = "${f.name} (${f.tracks.size})",
-                            selected = activeFolderKey == f.key,
-                            onClick = { activeFolderKey = if (activeFolderKey == f.key) null else f.key },
-                            icon = if (f.onSdCard) Icons.Rounded.SdCard else null,
-                        )
-                    }
+                    FlatChip(
+                        text = "Все (${allTracks.size})",
+                        selected = storageFilter == 0,
+                        onClick = { storageFilter = 0; activeFolderKey = null },
+                    )
+                    FlatChip(
+                        text = "Телефон ($phoneCount)",
+                        selected = storageFilter == 1,
+                        onClick = { storageFilter = 1; activeFolderKey = null },
+                        icon = Icons.Rounded.PhoneAndroid,
+                    )
+                    FlatChip(
+                        text = "SD-карта ($sdCount)",
+                        selected = storageFilter == 2,
+                        onClick = { storageFilter = 2; activeFolderKey = null },
+                        icon = Icons.Rounded.SdCard,
+                    )
                 }
-                Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Text("Найдено: ${visibleTracks.size}", style = MaterialTheme.typography.bodySmall, color = c.textDim, modifier = Modifier.weight(1f))
-                    val allVisibleSelected = visibleTracks.isNotEmpty() && visibleTracks.all { it.uri in selectedUris }
-                    TextButton(onClick = {
-                        selectedUris = if (allVisibleSelected) selectedUris - visibleTracks.map { it.uri }.toSet()
-                        else selectedUris + visibleTracks.map { it.uri }
-                    }) {
-                        Text(if (allVisibleSelected) "Снять все" else "Выбрать все", color = c.accent)
-                    }
-                }
+                Spacer(Modifier.height(8.dp))
 
-                LazyColumn(Modifier.fillMaxWidth().height(300.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                    items(visibleTracks, key = { it.uri }) { t ->
-                        val checked = t.uri in selectedUris
-                        FlatCard(
-                            Modifier.fillMaxWidth(),
-                            color = if (checked) c.accentSoft else c.surface2,
-                            onClick = { selectedUris = if (checked) selectedUris - t.uri else selectedUris + t.uri },
-                            padding = PaddingValues(10.dp),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    if (checked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
-                                    null,
-                                    tint = if (checked) c.accent else c.textDim,
-                                )
-                                Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
-                                    Text(t.title, style = MaterialTheme.typography.titleSmall, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(
-                                        listOf(t.artist, t.folder.takeIf { it.isNotBlank() }, fmtTime(t.durationMs).takeIf { t.durationMs > 0 })
-                                            .filterNotNull().joinToString(" · "),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = c.textDim,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis,
+                // Поиск работает сразу по выбранной памяти (по умолчанию и Телефон, и SD-карта) в обоих режимах!
+                FlatSearchField(
+                    value = search,
+                    onChange = { q ->
+                        search = q
+                        if (q.isNotBlank() && activeFolderKey != null) activeFolderKey = null
+                    },
+                    hint = when (storageFilter) {
+                        1 -> "Поиск в памяти телефона…"
+                        2 -> "Поиск на SD-карте…"
+                        else -> "Поиск на телефоне и SD-карте…"
+                    },
+                )
+                Spacer(Modifier.height(8.dp))
+
+                if (mode == 0) {
+                    // ---- Режим выбора конкретных песен (Телефон + SD, без картинок и m4a/mp4) ----
+                    Row(
+                        Modifier.horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        FlatChip("Все папки", activeFolderKey == null, onClick = { activeFolderKey = null })
+                        storageFolders.forEach { f ->
+                            FlatChip(
+                                text = "${f.name} (${f.tracks.size})",
+                                selected = activeFolderKey == f.key,
+                                onClick = { activeFolderKey = if (activeFolderKey == f.key) null else f.key },
+                                icon = if (f.onSdCard) Icons.Rounded.SdCard else Icons.Rounded.Folder,
+                            )
+                        }
+                    }
+                    Row(Modifier.fillMaxWidth().padding(top = 6.dp, bottom = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Text("Найдено: ${visibleTracks.size}", style = MaterialTheme.typography.bodySmall, color = c.textDim, modifier = Modifier.weight(1f))
+                        val allVisibleSelected = visibleTracks.isNotEmpty() && visibleTracks.all { it.uri in selectedUris }
+                        TextButton(onClick = {
+                            selectedUris = if (allVisibleSelected) selectedUris - visibleTracks.map { it.uri }.toSet()
+                            else selectedUris + visibleTracks.map { it.uri }
+                        }) {
+                            Text(if (allVisibleSelected) "Снять все" else "Выбрать все", color = c.accent)
+                        }
+                    }
+
+                    LazyColumn(Modifier.fillMaxWidth().height(270.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                        items(visibleTracks, key = { it.uri }) { t ->
+                            val checked = t.uri in selectedUris
+                            FlatCard(
+                                Modifier.fillMaxWidth(),
+                                color = if (checked) c.accentSoft else c.surface2,
+                                onClick = { selectedUris = if (checked) selectedUris - t.uri else selectedUris + t.uri },
+                                padding = PaddingValues(10.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        if (checked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
+                                        null,
+                                        tint = if (checked) c.accent else c.textDim,
                                     )
-                                }
-                                if (t.format.isNotBlank()) {
-                                    Text(
-                                        t.format,
-                                        fontSize = 10.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = c.accent,
-                                        modifier = Modifier
-                                            .clip(RoundedCornerShape(6.dp))
-                                            .background(c.surfaceSolid)
-                                            .padding(horizontal = 6.dp, vertical = 2.dp),
-                                    )
+                                    Column(Modifier.weight(1f).padding(horizontal = 10.dp)) {
+                                        Text(t.title, style = MaterialTheme.typography.titleSmall, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Row(verticalAlignment = Alignment.CenterVertically) {
+                                            Icon(
+                                                if (t.onSdCard) Icons.Rounded.SdCard else Icons.Rounded.PhoneAndroid,
+                                                null,
+                                                tint = if (t.onSdCard) c.accent else c.textDim,
+                                                modifier = Modifier.size(12.dp),
+                                            )
+                                            Spacer(Modifier.width(4.dp))
+                                            Text(
+                                                listOf(t.artist, t.folder.takeIf { it.isNotBlank() }, fmtTime(t.durationMs).takeIf { t.durationMs > 0 })
+                                                    .filterNotNull().joinToString(" · "),
+                                                style = MaterialTheme.typography.bodySmall,
+                                                color = c.textDim,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                    if (t.format.isNotBlank()) {
+                                        Text(
+                                            t.format,
+                                            fontSize = 10.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = c.accent,
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(6.dp))
+                                                .background(c.surfaceSolid)
+                                                .padding(horizontal = 6.dp, vertical = 2.dp),
+                                        )
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            } else {
-                // ---- Режим выбора папок ----
-                LazyColumn(Modifier.fillMaxWidth().height(340.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    items(folders, key = { it.key }) { f ->
-                        val checked = f.key in selectedFolderKeys
-                        FlatCard(
-                            Modifier.fillMaxWidth(),
-                            color = if (checked) c.accentSoft else c.surface2,
-                            onClick = { selectedFolderKeys = if (checked) selectedFolderKeys - f.key else selectedFolderKeys + f.key },
-                            padding = PaddingValues(12.dp),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(
-                                    if (checked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
-                                    null,
-                                    tint = if (checked) c.accent else c.textDim,
-                                )
-                                Spacer(Modifier.width(12.dp))
-                                Icon(
-                                    if (f.onSdCard) Icons.Rounded.SdCard else Icons.Rounded.Folder,
-                                    null,
-                                    tint = if (f.onSdCard) c.accent else c.textDim,
-                                    modifier = Modifier.size(20.dp),
-                                )
-                                Column(Modifier.weight(1f).padding(start = 10.dp)) {
-                                    Text(f.name, style = MaterialTheme.typography.titleSmall, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                                    Text(
-                                        "${f.tracks.size} треков" + if (f.onSdCard) " · Карта памяти" else " · Телефон",
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = c.textDim,
+                } else {
+                    // ---- Режим выбора папок (с поиском и фильтром Телефон / SD) ----
+                    LazyColumn(Modifier.fillMaxWidth().height(310.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        items(visibleFolders, key = { it.key }) { f ->
+                            val checked = f.key in selectedFolderKeys
+                            FlatCard(
+                                Modifier.fillMaxWidth(),
+                                color = if (checked) c.accentSoft else c.surface2,
+                                onClick = { selectedFolderKeys = if (checked) selectedFolderKeys - f.key else selectedFolderKeys + f.key },
+                                padding = PaddingValues(12.dp),
+                            ) {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(
+                                        if (checked) Icons.Rounded.CheckBox else Icons.Rounded.CheckBoxOutlineBlank,
+                                        null,
+                                        tint = if (checked) c.accent else c.textDim,
                                     )
+                                    Spacer(Modifier.width(12.dp))
+                                    Icon(
+                                        if (f.onSdCard) Icons.Rounded.SdCard else Icons.Rounded.Folder,
+                                        null,
+                                        tint = if (f.onSdCard) c.accent else c.textDim,
+                                        modifier = Modifier.size(20.dp),
+                                    )
+                                    Column(Modifier.weight(1f).padding(start = 10.dp)) {
+                                        Text(f.name, style = MaterialTheme.typography.titleSmall, color = c.text, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                                        Text(
+                                            "${f.tracks.size} треков" + if (f.onSdCard) " · Карта памяти (SD)" else " · Память телефона",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = c.textDim,
+                                        )
+                                    }
                                 }
                             }
                         }

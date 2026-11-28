@@ -1,9 +1,11 @@
 package com.aura.player.data
 
+import android.app.RecoverableSecurityException
 import android.content.ContentResolver
 import android.content.ContentUris
 import android.content.Context
 import android.content.Intent
+import android.content.IntentSender
 import android.database.Cursor
 import android.media.MediaMetadataRetriever
 import android.net.Uri
@@ -41,7 +43,8 @@ object Library {
 
     // Только музыкальные форматы (без m4a / mp4 / m4b / mm4 / 3gp / amr / видео)
     val allowedExt = setOf(
-        "mp3", "flac", "wav", "wave", "ogg", "oga", "opus", "aac", "mka", "aif", "aiff", "wma"
+        "mp3", "flac", "wav", "wave", "ogg", "oga", "opus", "aac", "mka", "aif", "aiff", "wma",
+        "ac3", "eac3", "ape", "wv", "mpc", "dsf", "dff", "mid", "midi",
     )
     private val blockedExt = setOf(
         "mp4", "m4a", "m4b", "m4p", "m4v", "mm4", "3gp", "3gpp", "amr", "webm", "mkv", "avi", "mov"
@@ -148,8 +151,71 @@ object Library {
     // ===================== Ручное добавление и проводник по SAF (без рекурсивной свалки) =====================
 
     fun persist(context: Context, uri: Uri) {
-        runCatching {
-            context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+        val tookBoth = runCatching {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
+            )
+            true
+        }.getOrDefault(false)
+        if (!tookBoth) {
+            runCatching {
+                context.contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+        }
+    }
+
+    sealed class DeleteFileResult {
+        data object Deleted : DeleteFileResult()
+        data class NeedSystemConfirm(val intentSender: IntentSender) : DeleteFileResult()
+        data class Failed(val reason: String) : DeleteFileResult()
+    }
+
+    /**
+     * Физически удаляет аудиофайл с телефона или SD-карты.
+     * На Android 11+ для MediaStore возвращает системный запрос подтверждения (MediaStore.createDeleteRequest).
+     */
+    fun deletePhysicalFile(context: Context, uriStr: String): DeleteFileResult {
+        val uri = runCatching { Uri.parse(uriStr) }.getOrNull() ?: return DeleteFileResult.Failed("Некорректный путь файла")
+        val cr = context.contentResolver
+
+        if (uri.scheme == "file") {
+            val f = uri.path?.let { File(it) } ?: return DeleteFileResult.Failed("Файл не найден")
+            return if (!f.exists() || f.delete()) DeleteFileResult.Deleted
+            else DeleteFileResult.Failed("Нет прав на удаление файла")
+        }
+
+        // SAF-документ (SD-карта / выбранная папка)
+        if (DocumentsContract.isDocumentUri(context, uri)) {
+            val ok = runCatching { DocumentsContract.deleteDocument(cr, uri) }.getOrDefault(false)
+            if (ok) return DeleteFileResult.Deleted
+            // Попытка через ContentResolver.delete
+            val rows = runCatching { cr.delete(uri, null, null) }.getOrDefault(0)
+            return if (rows > 0) DeleteFileResult.Deleted
+            else DeleteFileResult.Failed("Android запретил удаление этого SAF-файла (выдайте доступ к папке заново или удалите через файловый менеджер)")
+        }
+
+        // MediaStore (Android 11+ / API 30+) — официальный системный диалог удаления
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && uri.authority == MediaStore.AUTHORITY) {
+            val pi = runCatching { MediaStore.createDeleteRequest(cr, listOf(uri)) }.getOrNull()
+            if (pi != null) {
+                return DeleteFileResult.NeedSystemConfirm(pi.intentSender)
+            }
+        }
+
+        // MediaStore на Android 7–10 (и запасной путь)
+        return try {
+            val rows = cr.delete(uri, null, null)
+            if (rows > 0) DeleteFileResult.Deleted
+            else DeleteFileResult.Failed("Файл не найден или защищён от удаления")
+        } catch (se: SecurityException) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q && se is RecoverableSecurityException) {
+                DeleteFileResult.NeedSystemConfirm(se.userAction.actionIntent.intentSender)
+            } else {
+                DeleteFileResult.Failed("Нет системного разрешения на удаление этого файла")
+            }
+        } catch (e: Exception) {
+            DeleteFileResult.Failed(e.message ?: "Не удалось удалить файл")
         }
     }
 

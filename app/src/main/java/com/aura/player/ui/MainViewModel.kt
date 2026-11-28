@@ -18,6 +18,7 @@ import com.aura.player.data.Station
 import com.aura.player.data.StreamOption
 import com.aura.player.data.Track
 import com.aura.player.data.TrackBookmark
+import com.aura.player.data.TrackNotesStore
 import com.aura.player.playback.AudioEngine
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -66,6 +67,7 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
     val tracks = MutableStateFlow<List<Track>>(emptyList())
     val playlists = MutableStateFlow<List<Playlist>>(Library.loadPlaylists(ctx))
     val bookmarks = MutableStateFlow<List<TrackBookmark>>(BookmarkStore.load(ctx))
+    val trackNotes = MutableStateFlow<Map<String, String>>(TrackNotesStore.loadAll(ctx))
     val favoriteTracks = MutableStateFlow(prefs.favoriteTracks)
     val customThemes = MutableStateFlow(prefs.customThemes)
     val previewCustomTheme = MutableStateFlow<CustomTheme?>(null)
@@ -550,6 +552,42 @@ class MainViewModel(app: Application) : AndroidViewModel(app) {
         val next = bookmarks.value.filterNot { it.id == id }
         bookmarks.value = next
         BookmarkStore.save(ctx, next)
+    }
+
+    fun saveTrackNote(uri: String, note: String) {
+        val updated = TrackNotesStore.save(ctx, uri, note)
+        trackNotes.value = updated
+        toast.value = if (note.isBlank()) "Заметка удалена" else "Заметка сохранена"
+    }
+
+    /** Вызывается после успешного физического удаления файла с устройства. */
+    fun onPhysicalFileDeleted(t: Track) {
+        AudioEngine.stopIfPlaying(t.uri)
+        userTracks = userTracks.filterNot { it.uri == t.uri }
+        Library.saveUser(ctx, userTracks)
+        val updatedPl = playlists.value.map { p -> p.copy(uris = p.uris.filterNot { it == t.uri }) }
+        playlists.value = updatedPl
+        Library.savePlaylists(ctx, updatedPl)
+        if (t.uri in favoriteTracks.value) {
+            val nextFav = favoriteTracks.value - t.uri
+            favoriteTracks.value = nextFav
+            prefs.favoriteTracks = nextFav
+        }
+        val nextBm = bookmarks.value.filterNot { it.trackUri == t.uri }
+        if (nextBm.size != bookmarks.value.size) {
+            bookmarks.value = nextBm
+            BookmarkStore.save(ctx, nextBm)
+        }
+        if (t.uri in trackNotes.value) {
+            trackNotes.value = TrackNotesStore.remove(ctx, t.uri)
+        }
+        pickerAllTracks.value = pickerAllTracks.value.filterNot { it.uri == t.uri }
+        pickerFolders.value = pickerFolders.value.mapNotNull { f ->
+            val rem = f.tracks.filterNot { it.uri == t.uri }
+            if (rem.isEmpty()) null else f.copy(tracks = rem)
+        }
+        publish()
+        toast.value = "Файл «${t.title}» удалён с устройства"
     }
 
     fun editTrackMeta(uri: String, newTitle: String, newArtist: String) {

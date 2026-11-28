@@ -1,6 +1,7 @@
 package com.aura.player.ui
 
 import android.Manifest
+import android.app.Activity
 import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
@@ -18,6 +19,7 @@ import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.IntentSenderRequest
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.animation.AnimatedContent
@@ -103,6 +105,8 @@ import androidx.core.view.WindowCompat
 import androidx.media3.session.MediaController
 import androidx.media3.session.SessionToken
 import com.aura.player.R
+import com.aura.player.data.Library
+import com.aura.player.data.Track
 import com.aura.player.playback.AudioEngine
 import com.aura.player.playback.PlaybackService
 import com.google.common.util.concurrent.ListenableFuture
@@ -185,6 +189,40 @@ class MainActivity : ComponentActivity() {
         vm.addFiles(uris, targetPlaylistId = pl)
     }
 
+    private var pendingDeleteTrack: Track? = null
+
+    private val deleteConfirmLauncher = registerForActivityResult(ActivityResultContracts.StartIntentSenderForResult()) { res ->
+        val tr = pendingDeleteTrack
+        pendingDeleteTrack = null
+        if (tr != null && res.resultCode == Activity.RESULT_OK) {
+            if (Build.VERSION.SDK_INT == Build.VERSION_CODES.Q) {
+                runCatching { contentResolver.delete(Uri.parse(tr.uri), null, null) }
+            }
+            vm.onPhysicalFileDeleted(tr)
+        } else if (tr != null) {
+            Toast.makeText(this, "Удаление отменено", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    private fun requestPhysicalDelete(track: Track) {
+        AudioEngine.stopIfPlaying(track.uri)
+        when (val result = Library.deletePhysicalFile(this, track.uri)) {
+            is Library.DeleteFileResult.Deleted -> vm.onPhysicalFileDeleted(track)
+            is Library.DeleteFileResult.NeedSystemConfirm -> {
+                pendingDeleteTrack = track
+                runCatching {
+                    deleteConfirmLauncher.launch(IntentSenderRequest.Builder(result.intentSender).build())
+                }.onFailure {
+                    pendingDeleteTrack = null
+                    Toast.makeText(this, "Не удалось открыть системное подтверждение удаления", Toast.LENGTH_LONG).show()
+                }
+            }
+            is Library.DeleteFileResult.Failed -> {
+                Toast.makeText(this, result.reason, Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+
     private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
         val pl = pendingPlaylistId
         pendingPlaylistId = null
@@ -254,6 +292,7 @@ class MainActivity : ComponentActivity() {
                             pickerPermLauncher.launch(audioPermission)
                         }
                     },
+                    onDeletePhysical = { requestPhysicalDelete(it) },
                 )
             }
         }
@@ -316,6 +355,7 @@ private fun AppRoot(
     onAddFiles: (playlistId: String?) -> Unit,
     onAddFolder: (playlistId: String?) -> Unit,
     onRequestDevicePicker: () -> Unit,
+    onDeletePhysical: (Track) -> Unit,
 ) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -412,6 +452,7 @@ private fun AppRoot(
                             onAddFolder = onAddFolder,
                             onOpenDevicePicker = onRequestDevicePicker,
                             bottomPadding = bottomSpace,
+                            onDeletePhysical = onDeletePhysical,
                         )
                         Tab.RADIO -> RadioScreen(vm = vm, onMenu = openMenu, bottomPadding = bottomSpace)
                         Tab.SOUND -> SoundScreen(
@@ -462,6 +503,7 @@ private fun AppRoot(
                     onOpenPlaylists = { full = false; tab = Tab.LIBRARY; libTab = LibTab.PLAYLISTS },
                     onOpenCarMode = { showCarMode = true },
                     onCustomizeDock = { showDockCustomizer = true },
+                    onDeletePhysical = onDeletePhysical,
                 )
             }
 

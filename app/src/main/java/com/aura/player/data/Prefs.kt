@@ -79,6 +79,10 @@ class Prefs(context: Context) {
     var outputMode: Int get() = sp.getInt("outputMode", 0); set(v) = put("outputMode", v)
     var forceSpeakerCallMode: Boolean get() = sp.getBoolean("forceSpeakerCall", false); set(v) = put("forceSpeakerCall", v)
     var audioQuality: Int get() = sp.getInt("audioQuality", 0); set(v) = put("audioQuality", v)
+    var audioEngineMode: Int get() = sp.getInt("audioEngineMode", 0); set(v) = put("audioEngineMode", v)
+    var decoderPriority: Int get() = sp.getInt("decoderPriority", 0); set(v) = put("decoderPriority", v)
+    var limiterEnabled: Boolean get() = sp.getBoolean("limiterEnabled", true); set(v) = put("limiterEnabled", v)
+    var vizSyncOffsetMs: Int get() = sp.getInt("vizSyncOffsetMs", 0); set(v) = put("vizSyncOffsetMs", v)
 
     // ---- радио ----
     var quality: Int get() = sp.getInt("quality", 1); set(v) = put("quality", v)

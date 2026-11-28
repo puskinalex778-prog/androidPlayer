@@ -42,6 +42,7 @@ import androidx.compose.material3.SliderDefaults
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -55,7 +56,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.aura.player.data.AudioEngineMode
 import com.aura.player.data.AudioQualityMode
+import com.aura.player.data.DecoderPriority
 import com.aura.player.data.OutputMode
 import com.aura.player.playback.AudioEngine
 import com.aura.player.playback.EqPresets
@@ -402,6 +405,112 @@ fun OutputAndQualityControls() {
                         }
                         if (sel) Icon(Icons.Rounded.CheckCircle, null, tint = c.accent)
                     }
+                }
+            }
+        }
+
+        SectionHeader("Аудио-движок и вывод")
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            AudioEngineMode.entries.forEach { eng ->
+                val sel = s.engineMode == eng
+                FlatCard(
+                    Modifier.fillMaxWidth(),
+                    color = if (sel) c.accentSoft else c.surface,
+                    onClick = { AudioEngine.setAudioEngineMode(eng) },
+                    padding = PaddingValues(13.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Text(eng.title, style = MaterialTheme.typography.titleSmall, color = if (sel) c.accent else c.text)
+                                Text(
+                                    eng.badge,
+                                    fontSize = 9.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = if (sel) c.onAccent else c.textDim,
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(5.dp))
+                                        .background(if (sel) c.accent else c.surface2)
+                                        .padding(horizontal = 5.dp, vertical = 2.dp),
+                                )
+                            }
+                            Spacer(Modifier.height(3.dp))
+                            Text(eng.desc, style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                        }
+                        if (sel) Icon(Icons.Rounded.CheckCircle, null, tint = c.accent)
+                    }
+                }
+            }
+        }
+
+        SectionHeader("Декодеры и кодеки")
+        Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            DecoderPriority.entries.forEach { dec ->
+                val sel = s.decoderPriority == dec
+                FlatCard(
+                    Modifier.fillMaxWidth(),
+                    color = if (sel) c.accentSoft else c.surface,
+                    onClick = { AudioEngine.setDecoderPriority(dec) },
+                    padding = PaddingValues(12.dp),
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text(dec.title, style = MaterialTheme.typography.titleSmall, color = if (sel) c.accent else c.text)
+                            Text(dec.desc, style = MaterialTheme.typography.bodySmall, color = c.textDim)
+                        }
+                        if (sel) Icon(Icons.Rounded.CheckCircle, null, tint = c.accent)
+                    }
+                }
+            }
+            FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(12.dp)) {
+                Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("Поддерживаемые кодеки и потоки", style = MaterialTheme.typography.titleSmall, color = c.text)
+                    Text(
+                        "MP3 · FLAC (Hi-Res) · WAV / PCM · OGG Vorbis · Opus · AAC · ALAC · AC-3 / E-AC-3 · AIFF · MKA · HLS · MPEG-DASH · RTSP",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontFamily = FontFamily.Monospace,
+                        color = c.textDim,
+                    )
+                }
+            }
+        }
+
+        SectionHeader("Защита звука и синхронизация визуала")
+        FlatCard(Modifier.fillMaxWidth(), padding = PaddingValues(0.dp)) {
+            Column {
+                SoundToggle(
+                    title = "Мягкий лимитер (Anti-Clipping)",
+                    sub = "Защищает от хрипов при сильном басе и EQ",
+                    checked = s.limiterOn,
+                ) { AudioEngine.setLimiterEnabled(it) }
+                HorizontalDivider(color = c.border)
+                Column(Modifier.padding(horizontal = 14.dp, vertical = 12.dp)) {
+                    val autoTotal = AudioEngine.effectiveVizDelayMs()
+                    val offsetSign = if (s.vizSyncOffsetMs > 0) "+" else ""
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Column(Modifier.weight(1f)) {
+                            Text("Синхронизация визуализации", style = MaterialTheme.typography.titleSmall, color = c.text)
+                            Text(
+                                "Авто-буфер + сдвиг: $autoTotal мс ($offsetSign${s.vizSyncOffsetMs} мс)",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = c.textDim,
+                            )
+                        }
+                        if (s.vizSyncOffsetMs != 0) {
+                            TextButton(onClick = { AudioEngine.setVizSyncOffsetMs(0) }) { Text("Авто", color = c.accent) }
+                        }
+                    }
+                    Slider(
+                        value = s.vizSyncOffsetMs.toFloat(),
+                        onValueChange = { AudioEngine.setVizSyncOffsetMs((it / 10f).roundToInt() * 10) },
+                        valueRange = -150f..450f,
+                        colors = SliderDefaults.colors(
+                            thumbColor = c.accent,
+                            activeTrackColor = c.accent,
+                            inactiveTrackColor = c.surface2,
+                        ),
+                    )
                 }
             }
         }

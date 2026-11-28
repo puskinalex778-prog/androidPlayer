@@ -34,6 +34,7 @@ class FxProcessor : BaseAudioProcessor() {
     @Volatile var mode: Mode = Mode.NONE
     @Volatile var directBypass: Boolean = false
     @Volatile var hiResDither: Boolean = true
+    @Volatile var limiterEnabled: Boolean = true
     @Volatile private var gains = FloatArray(10)
     @Volatile private var eqOn = true
     @Volatile private var bassDb = 0f
@@ -61,18 +62,28 @@ class FxProcessor : BaseAudioProcessor() {
         version++
     }
 
-    // ---------- визуализация ----------
-    private val ring = FloatArray(4096)
+    // ---------- визуализация (кольцевой буфер ~740 мс для точной синхронизации с AudioTrack и Bluetooth) ----------
+    private val ring = FloatArray(32768)
     @Volatile private var ringPos = 0
     @Volatile var lastWriteNs = 0L
         private set
 
-    fun snapshot(out: FloatArray) {
+    fun snapshot(out: FloatArray, delayMs: Int = 0) {
         val p = ringPos
         val n = out.size
+        val delaySamples = ((delayMs.coerceIn(0, 620).toLong() * liveSampleRate) / 1000L).toInt()
+            .coerceIn(0, ring.size - n - 1)
+        val base = p - n - delaySamples
         for (i in 0 until n) {
-            out[i] = ring[(p - n + i + ring.size * 2) % ring.size]
+            var idx = (base + i) % ring.size
+            if (idx < 0) idx += ring.size
+            out[i] = ring[idx]
         }
+    }
+
+    fun clearRing() {
+        ring.fill(0f)
+        lastWriteNs = 0L
     }
 
     // ---------- состояние ----------
@@ -127,6 +138,7 @@ class FxProcessor : BaseAudioProcessor() {
         liveSampleRate = sampleRate
         liveChannels = channels
         liveIsFloat = outFloat || hiResDither
+        ring.fill(0f)
 
         delayLen = sampleRate
         delay = Array(channels) { FloatArray(delayLen) }
@@ -413,8 +425,10 @@ class FxProcessor : BaseAudioProcessor() {
 
             var monoSum = 0f
             val totalGain = g * normGain
+            val useLimiter = limiterEnabled
             for (c in 0 until ch) {
-                val v = softClip(frame[c] * totalGain)
+                val rawOut = frame[c] * totalGain
+                val v = if (useLimiter) softClip(rawOut) else rawOut.coerceIn(-1f, 1f)
                 monoSum += v
                 if (outFl) {
                     out.putFloat(v)

@@ -54,6 +54,40 @@ enum class OutputMode(val title: String) {
     }
 }
 
+/** Аудио-движок вывода (как в AIMP / Poweramp / Hi-Res плеерах). */
+enum class AudioEngineMode(val title: String, val desc: String, val badge: String) {
+    AUDIOTRACK_STD(
+        "AudioTrack Hi-Fi",
+        "Стандартный движок Media3 · 32-bit DSP, стабильная работа с Bluetooth и авто",
+        "AudioTrack",
+    ),
+    AUDIOTRACK_LOW_LATENCY(
+        "Low-Latency DSP",
+        "Уменьшенный аудиобуфер · мгновенный отклик, быстрая перемотка и точный синхрон визуала",
+        "Low-Latency",
+    ),
+    AUDIO_OFFLOAD(
+        "Hardware Offload",
+        "Аппаратное декодирование DSP-чипом телефона (активно в режиме Direct, экономит батарею)",
+        "Offload DSP",
+    );
+
+    companion object {
+        fun of(index: Int): AudioEngineMode = entries.getOrElse(index) { AUDIOTRACK_STD }
+    }
+}
+
+/** Приоритет аудиодекодеров / кодеков. */
+enum class DecoderPriority(val title: String, val desc: String) {
+    AUTO("Авто (Аппаратный + Soft)", "Оптимальный кодек Android MediaCodec + резервные декодеры Media3"),
+    HARDWARE("Приоритет аппаратного", "Максимальное использование системных кодеков (экономия CPU)"),
+    SOFTWARE("Программный + Fallback", "Расширенная совместимость с редкими FLAC / OGG / Opus / WAV / AC-3");
+
+    companion object {
+        fun of(index: Int): DecoderPriority = entries.getOrElse(index) { AUTO }
+    }
+}
+
 /** Один поток станции — конкретный битрейт. */
 data class StreamOption(
     val bitrate: Int,          // кбит/с; 0 = адаптивный (HLS) / неизвестно
@@ -103,6 +137,7 @@ enum class PlayerDockAction(val title: String) {
     SPEED("Скорость"),
     VISUALIZER("Визуал"),
     BOOKMARK("Закладки"),
+    NOTE("Заметка"),
     CAR_MODE("Авто"),
     INFO("Инфо");
 

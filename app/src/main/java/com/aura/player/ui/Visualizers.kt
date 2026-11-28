@@ -19,6 +19,7 @@ import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.graphics.drawscope.clipRect
+import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.toArgb
 import com.aura.player.playback.AudioEngine
@@ -44,7 +45,8 @@ enum class VisualizerType(val title: String) {
     RADIAL("Кольцо"),
     LED_VU("LED-дека"),
     PARTICLES("Энергия"),
-    MIRROR("Горизонт");
+    MIRROR("Горизонт"),
+    BAND("Рок-банда");
 
     fun next(): VisualizerType = entries[(ordinal + 1) % entries.size]
 
@@ -219,6 +221,22 @@ private class FrequencyAnalyzer(val bands: Int) {
     var strobeFlash = 0f
     var partyHue = 205f
 
+    // 3 частотных канала для сцены «Рок-банда»: барабаны (Таракан), вокал (Кот), гитара (Белый крыс)
+    var drumsLevel = 0f
+    var drumKick = 0f
+    var drumSnare = 0f
+    var drumLeftStick = 0f
+    var drumRightStick = 0f
+    private var drumSideToggle = false
+    var vocalLevel = 0f
+    var vocalMouth = 0f
+    var vocalNotePhase = 0f
+    var guitarLevel = 0f
+    var guitarStrum = 0f
+    var guitarPhase = 0f
+    private var prevSnareRaw = 0f
+    private var prevGuitarRaw = 0f
+
     private var agcPeak = 0.55f
     private var agc24 = 0.55f
     private var bassAvg = 0f
@@ -243,7 +261,7 @@ private class FrequencyAnalyzer(val bands: Int) {
 
         var rms = 0f
         if (active) {
-            AudioEngine.fx.snapshot(buf)
+            AudioEngine.fx.snapshot(buf, AudioEngine.effectiveVizDelayMs())
             var sumSq = 0f
             for (i in 0 until n) {
                 val s = buf[i]
@@ -255,13 +273,14 @@ private class FrequencyAnalyzer(val bands: Int) {
             fft(re, im)
         }
 
-        // Динамический коэффициент: в тишине не задираем громкость в 100%, на пиках оставляем запас
-        val loudnessScale = if (active) (0.35f + (rms * 5.2f).coerceIn(0f, 0.72f)).coerceIn(0.35f, 1.0f) else 0f
+        // Шумовой порог + реальная динамика громкости: в тишине колонки опускаются в 0, на пиках сохраняется запас
+        val rmsGate = ((rms - 0.004f) * 8.5f).coerceIn(0f, 1f)
+        val loudnessScale = if (active && rms > 0.004f) rmsGate.pow(0.52f) else 0f
 
         var rawMax = 0f
         for (b in 0 until bands) {
             var raw = 0f
-            if (active) {
+            if (active && loudnessScale > 0.01f) {
                 val a = edges[b]
                 val e = max(edges[b + 1], a + 1)
                 var peak = 0f
@@ -273,12 +292,12 @@ private class FrequencyAnalyzer(val bands: Int) {
             rawLevels[b] = raw
             if (raw > rawMax) rawMax = raw
         }
-        agcPeak = max(rawMax, agcPeak * exp(-dt * 0.45f)).coerceAtLeast(0.36f)
+        agcPeak = max(rawMax, agcPeak * exp(-dt * 0.45f)).coerceAtLeast(0.42f)
 
         var rawMax24 = 0f
         for (b in 0 until bands24) {
             var raw = 0f
-            if (active) {
+            if (active && loudnessScale > 0.01f) {
                 val a = edges24[b]
                 val e = max(edges24[b + 1], a + 1)
                 var peak = 0f
@@ -290,10 +309,10 @@ private class FrequencyAnalyzer(val bands: Int) {
             raw24[b] = raw
             if (raw > rawMax24) rawMax24 = raw
         }
-        agc24 = max(rawMax24, agc24 * exp(-dt * 0.45f)).coerceAtLeast(0.36f)
+        agc24 = max(rawMax24, agc24 * exp(-dt * 0.45f)).coerceAtLeast(0.42f)
 
-        val atkFactor = 1f - exp(-dt * 30f)
-        val decFactor = 1f - exp(-dt * 7.8f)
+        val atkFactor = 1f - exp(-dt * 36f)
+        val decFactor = 1f - exp(-dt * 14.5f)
 
         var bSum = 0f
         var mSum = 0f
@@ -314,15 +333,15 @@ private class FrequencyAnalyzer(val bands: Int) {
             }
             levels[b] = cur
 
-            // Баллистика пиков с коротким зависанием и плавным падением
+            // Баллистика пиков с коротким зависанием и быстрым плавным падением
             if (cur >= peaks[b]) {
                 peaks[b] = cur
-                peakHold[b] = 0.16f
+                peakHold[b] = 0.08f
                 peakVel[b] = 0f
             } else if (peakHold[b] > 0f) {
                 peakHold[b] = (peakHold[b] - dt).coerceAtLeast(0f)
             } else {
-                peakVel[b] += dt * 1.45f
+                peakVel[b] += dt * 3.4f
                 peaks[b] = (peaks[b] - peakVel[b] * dt).coerceAtLeast(cur)
             }
 
@@ -365,12 +384,12 @@ private class FrequencyAnalyzer(val bands: Int) {
             val lvl = levels24[b]
             if (lvl >= peaks24[b]) {
                 peaks24[b] = lvl
-                peakHold24[b] = 0.15f
+                peakHold24[b] = 0.08f
                 peakVel24[b] = 0f
             } else if (peakHold24[b] > 0f) {
                 peakHold24[b] = (peakHold24[b] - dt).coerceAtLeast(0f)
             } else {
-                peakVel24[b] += dt * 1.35f
+                peakVel24[b] += dt * 3.2f
                 peaks24[b] = (peaks24[b] - peakVel24[b] * dt).coerceAtLeast(lvl)
             }
 
@@ -440,8 +459,92 @@ private class FrequencyAnalyzer(val bands: Int) {
         // Обновление 3 слоёв частиц для «Энергии»
         updateParticles(active, dt)
 
+        // Разделение на 3 инструментальные партии для сцены «Рок-банда» (Барабаны / Вокал / Гитара)
+        updateBandChannels(active && loudnessScale > 0.02f, dt, loudnessScale)
+
         phase += dt * (1.25f + bass * 2.1f)
         if (active) partyHue = (partyHue + dt * (12f + mid * 38f)) % 360f
+    }
+
+    private fun updateBandChannels(hasSound: Boolean, dt: Float, loud: Float) {
+        if (!hasSound) {
+            val dec = exp(-dt * 9f)
+            drumsLevel *= dec; drumKick *= dec; drumSnare *= dec
+            drumLeftStick *= dec; drumRightStick *= dec
+            vocalLevel *= dec; vocalMouth *= dec
+            guitarLevel *= dec; guitarStrum *= dec
+            return
+        }
+
+        // 1. Барабаны и бас (43..172 Гц бочка + транзиенты 2200..6500 Гц малый/тарелки)
+        var kickBin = 0f
+        for (k in 1..4) kickBin = max(kickBin, hypot(re[k], im[k]))
+        var snareBin = 0f
+        for (k in 50..150) snareBin += hypot(re[k], im[k])
+        snareBin /= 100f
+
+        val kickRaw = (((20f * ln(kickBin + 1e-6f) / ln(10f) + 10f) / 40f).coerceIn(0f, 1f) * loud)
+        val snareRaw = (((20f * ln(snareBin + 1e-6f) / ln(10f) + 18f) / 38f).coerceIn(0f, 1f) * loud)
+        val snareJump = (snareRaw - prevSnareRaw).coerceAtLeast(0f)
+        prevSnareRaw = prevSnareRaw * 0.65f + snareRaw * 0.35f
+
+        val kickTrigger = bassHit > 0.30f || kickRaw > drumsLevel + 0.14f
+        if (kickTrigger && kickRaw > 0.22f) {
+            drumKick = max(drumKick, (0.55f + kickRaw * 0.45f).coerceIn(0f, 1f))
+            drumSideToggle = !drumSideToggle
+            if (drumSideToggle) drumLeftStick = 1f else drumRightStick = 1f
+        } else {
+            drumKick *= exp(-dt * 12f)
+        }
+
+        if (snareJump > 0.08f && snareRaw > 0.18f) {
+            drumSnare = max(drumSnare, (0.55f + snareJump * 3.5f).coerceIn(0f, 1f))
+            drumRightStick = max(drumRightStick, 0.95f)
+            if (drumKick > 0.4f) drumLeftStick = max(drumLeftStick, 0.9f)
+        } else {
+            drumSnare *= exp(-dt * 13f)
+        }
+        drumLeftStick *= exp(-dt * 10f)
+        drumRightStick *= exp(-dt * 10f)
+        val targetDrums = max(kickRaw * 0.92f, max(drumKick, drumSnare * 0.85f)).coerceIn(0f, 1f)
+        drumsLevel += (targetDrums - drumsLevel) * (1f - exp(-dt * (if (targetDrums > drumsLevel) 24f else 10f)))
+
+        // 2. Вокальный диапазон (300..1150 Гц основная форманта + 1800..3300 Гц присутствие голоса)
+        var vLow = 0f
+        for (k in 7..26) vLow += hypot(re[k], im[k])
+        vLow /= 20f
+        var vPres = 0f
+        for (k in 42..76) vPres += hypot(re[k], im[k])
+        vPres /= 35f
+        val vCore = (((20f * ln(vLow + 1e-6f) / ln(10f) + 14f) / 38f).coerceIn(0f, 1f))
+        val vAir = (((20f * ln(vPres + 1e-6f) / ln(10f) + 20f) / 36f).coerceIn(0f, 1f))
+        // Изоляция вокала: голос проявляется, когда форманты выражены относительно глухого баса
+        val vocalFocus = (vCore * 0.62f + vAir * 0.38f) * loud
+        val vocalGate = ((vocalFocus - kickRaw * 0.22f - 0.14f) * 1.55f).coerceIn(0f, 1f)
+        vocalLevel += (vocalGate - vocalLevel) * (1f - exp(-dt * (if (vocalGate > vocalLevel) 20f else 11f)))
+        val mouthTarget = if (vocalLevel > 0.12f) (vocalLevel * (0.75f + 0.25f * sin(phase * 6.5f))).coerceIn(0f, 1f) else 0f
+        vocalMouth += (mouthTarget - vocalMouth) * (1f - exp(-dt * 22f))
+        if (vocalLevel > 0.14f) vocalNotePhase += dt * (1.2f + vocalLevel * 1.6f)
+
+        // 3. Гитарный диапазон (170..650 Гц корпус/рифф + 1100..3800 Гц струнные гармоники)
+        var gBody = 0f
+        for (k in 4..15) gBody += hypot(re[k], im[k])
+        gBody /= 12f
+        var gHarm = 0f
+        for (k in 26..88) gHarm += hypot(re[k], im[k])
+        gHarm /= 63f
+        val gRaw = ((((20f * ln(gBody + 1e-6f) / ln(10f) + 13f) / 38f).coerceIn(0f, 1f) * 0.50f) +
+            (((20f * ln(gHarm + 1e-6f) / ln(10f) + 19f) / 36f).coerceIn(0f, 1f) * 0.50f)) * loud
+        val gJump = (gRaw - prevGuitarRaw).coerceAtLeast(0f)
+        prevGuitarRaw = prevGuitarRaw * 0.72f + gRaw * 0.28f
+        val guitarGate = ((gRaw - 0.13f) * 1.45f).coerceIn(0f, 1f)
+        guitarLevel += (guitarGate - guitarLevel) * (1f - exp(-dt * (if (guitarGate > guitarLevel) 22f else 10f)))
+        if (gJump > 0.045f && guitarLevel > 0.14f) {
+            guitarStrum = max(guitarStrum, (0.55f + gJump * 5.5f).coerceIn(0f, 1f))
+        } else {
+            guitarStrum *= exp(-dt * 9.5f)
+        }
+        if (guitarLevel > 0.12f) guitarPhase += dt * (4.5f + guitarLevel * 8.5f + guitarStrum * 6f)
     }
 
     private fun updateWaveStream(active: Boolean, dt: Float, rms: Float) {
@@ -639,6 +742,7 @@ fun AudioVisualizer(
                 VisualizerType.LED_VU -> drawLedDeckPro(analyzer, palette, large, ledDeckSparks)
                 VisualizerType.PARTICLES -> drawEnergyCloud(analyzer, palette, large)
                 VisualizerType.MIRROR -> drawHorizonPro(analyzer, palette, large)
+                VisualizerType.BAND -> drawRockBand(analyzer, palette, large)
             }
         }
     }
@@ -1449,6 +1553,586 @@ private fun DrawScope.drawHorizonPro(a: FrequencyAnalyzer, p: VizPalette, large:
                     cap = StrokeCap.Round,
                 )
             }
+        }
+    }
+}
+
+// 10. «Рок-банда» — Таракан на барабанах (бас/ударные), Шотландский вислоухий кот с микрофоном (вокал), Белый крыс с гитарой (гитара)
+private fun DrawScope.drawRockBand(a: FrequencyAnalyzer, p: VizPalette, large: Boolean) {
+    val w = size.width
+    val h = size.height
+
+    val vocal = a.vocalLevel
+    val drums = a.drumsLevel
+    val guitar = a.guitarLevel
+
+    val catCol = Color(0xFF38BDF8)   // прожектор на кота (вокал)
+    val drumCol = Color(0xFFF59E0B)  // прожектор на таракана (барабаны)
+    val ratCol = Color(0xFFA78BFA)   // прожектор на крыса (гитара)
+
+    if (!large) {
+        // Компактная полоса (38dp): три живых блока-индикатора (Кот · Таракан · Крыс)
+        val sections = listOf(
+            Triple(w * 0.18f, vocal, catCol),
+            Triple(w * 0.50f, drums, drumCol),
+            Triple(w * 0.82f, guitar, ratCol),
+        )
+        val cy = h * 0.52f
+        val rBase = min(h * 0.34f, w * 0.06f)
+        sections.forEachIndexed { idx, (sx, lvl, col) ->
+            // Мягкое свечение активного участника
+            if (lvl > 0.08f) {
+                drawCircle(
+                    Brush.radialGradient(listOf(col.copy(alpha = 0.35f * lvl), Color.Transparent), Offset(sx, cy), rBase * 2.4f),
+                    rBase * 2.4f,
+                    Offset(sx, cy),
+                )
+            }
+            when (idx) {
+                0 -> {
+                    // Вислоухий кот (мини)
+                    drawCircle(Color(0xFF8B98AB), rBase * 0.85f, Offset(sx, cy))
+                    drawOval(Color(0xFF6B778C), Offset(sx - rBase * 1.05f, cy - rBase * 0.65f), Size(rBase * 0.55f, rBase * 0.45f))
+                    drawOval(Color(0xFF6B778C), Offset(sx + rBase * 0.50f, cy - rBase * 0.65f), Size(rBase * 0.55f, rBase * 0.45f))
+                    val mouthH = (rBase * 0.12f + a.vocalMouth * rBase * 0.42f)
+                    drawOval(Color(0xFFF472B6), Offset(sx - rBase * 0.22f, cy + rBase * 0.12f), Size(rBase * 0.44f, mouthH))
+                }
+                1 -> {
+                    // Барабан + палочки таракана (мини)
+                    val br = rBase * (0.90f + a.drumKick * 0.18f)
+                    drawCircle(Color(0xFF1E293B), br, Offset(sx, cy))
+                    drawCircle(drumCol.copy(alpha = 0.4f + drums * 0.6f), br, Offset(sx, cy), style = Stroke(2f))
+                    val lLift = a.drumLeftStick * rBase * 0.6f
+                    val rLift = a.drumRightStick * rBase * 0.6f
+                    drawLine(Color(0xFFFDE68A), Offset(sx - br * 1.2f, cy - br * 0.9f + lLift), Offset(sx - br * 0.25f, cy - br * 0.15f), 2f, StrokeCap.Round)
+                    drawLine(Color(0xFFFDE68A), Offset(sx + br * 1.2f, cy - br * 0.9f + rLift), Offset(sx + br * 0.25f, cy - br * 0.15f), 2f, StrokeCap.Round)
+                }
+                else -> {
+                    // Белый крыс + гитара (мини)
+                    drawCircle(Color(0xFFF8FAFC), rBase * 0.78f, Offset(sx, cy))
+                    drawCircle(Color(0xFFFDA4AF), rBase * 0.36f, Offset(sx - rBase * 0.55f, cy - rBase * 0.68f))
+                    drawCircle(Color(0xFFFDA4AF), rBase * 0.36f, Offset(sx + rBase * 0.55f, cy - rBase * 0.68f))
+                    drawLine(
+                        Color(0xFFEF4444),
+                        Offset(sx - rBase * 0.9f, cy + rBase * 0.55f),
+                        Offset(sx + rBase * 1.15f, cy - rBase * 0.35f + sin(a.guitarPhase) * a.guitarStrum * 3f),
+                        3f,
+                        StrokeCap.Round,
+                    )
+                }
+            }
+            // Индикаторная полоска уровня под участником
+            val barW = w * 0.22f
+            drawRoundRect(Color.White.copy(alpha = 0.08f), Offset(sx - barW * 0.5f, h - 4f), Size(barW, 2.5f), CornerRadius(2f))
+            drawRoundRect(col.copy(alpha = 0.35f + lvl * 0.65f), Offset(sx - barW * 0.5f, h - 4f), Size((barW * lvl).coerceAtLeast(2f), 2.5f), CornerRadius(2f))
+        }
+        return
+    }
+
+    // ===================== БОЛЬШАЯ КОНЦЕРТНАЯ СЦЕНА =====================
+    val u = min(w, h) / 300f // базовая единица масштаба
+    val trussY = h * 0.06f
+    val podiumY = h * 0.62f
+    val stageFloorY = h * 0.79f
+
+    // 1. Сценический пол с глубиной и отражением света
+    drawRect(
+        Brush.verticalGradient(listOf(Color(0xFF0E1320), Color(0xFF070A12)), stageFloorY - 26f * u, h),
+        Offset(0f, stageFloorY - 26f * u),
+        Size(w, h - (stageFloorY - 26f * u)),
+    )
+    drawLine(
+        Brush.horizontalGradient(listOf(Color.Transparent, p.mid.copy(alpha = 0.30f), Color.Transparent)),
+        Offset(0f, stageFloorY - 26f * u),
+        Offset(w, stageFloorY - 26f * u),
+        1.5f * u,
+    )
+
+    // Подиум барабанщика в центре
+    val podW = w * 0.44f
+    val podH = 14f * u
+    drawRoundRect(
+        Brush.verticalGradient(listOf(Color(0xFF1A2235), Color(0xFF0D111C)), podiumY, podiumY + podH),
+        Offset((w - podW) * 0.5f, podiumY),
+        Size(podW, podH),
+        CornerRadius(5f * u),
+    )
+    drawLine(
+        drumCol.copy(alpha = 0.22f + drums * 0.55f),
+        Offset((w - podW) * 0.5f + 6f * u, podiumY + 1f * u),
+        Offset((w + podW) * 0.5f - 6f * u, podiumY + 1f * u),
+        2f * u,
+        StrokeCap.Round,
+    )
+
+    // 2. Верхняя балка и 3 прожектора (каждый горит ярко, когда играет его участник!)
+    drawLine(Color.White.copy(alpha = 0.14f), Offset(w * 0.06f, trussY), Offset(w * 0.94f, trussY), 2.5f * u)
+
+    fun drawSpotBeam(srcX: Float, dstX: Float, dstY: Float, col: Color, lvl: Float) {
+        val alpha = 0.05f + lvl * 0.30f
+        val halfW = (28f + lvl * 22f) * u
+        a.pathMain.reset()
+        a.pathMain.moveTo(srcX - 4f * u, trussY)
+        a.pathMain.lineTo(srcX + 4f * u, trussY)
+        a.pathMain.lineTo(dstX + halfW, dstY)
+        a.pathMain.lineTo(dstX - halfW, dstY)
+        a.pathMain.close()
+        drawPath(a.pathMain, Brush.verticalGradient(listOf(col.copy(alpha = alpha), Color.Transparent), trussY, dstY))
+        // Блик на полу под музыкантом
+        drawOval(
+            Brush.radialGradient(listOf(col.copy(alpha = 0.12f + lvl * 0.32f), Color.Transparent), Offset(dstX, dstY), halfW),
+            Offset(dstX - halfW, dstY - 10f * u),
+            Size(halfW * 2f, 20f * u),
+        )
+        // Линза прожектора
+        drawCircle(col.copy(alpha = 0.35f + lvl * 0.65f), 5.5f * u, Offset(srcX, trussY))
+        drawCircle(Color.White.copy(alpha = 0.5f + lvl * 0.5f), 2.2f * u, Offset(srcX, trussY))
+    }
+
+    drawSpotBeam(w * 0.22f, w * 0.21f, stageFloorY + 6f * u, catCol, vocal)
+    drawSpotBeam(w * 0.50f, w * 0.50f, podiumY + 2f * u, drumCol, drums)
+    drawSpotBeam(w * 0.78f, w * 0.79f, stageFloorY + 6f * u, ratCol, guitar)
+
+    // ===================== 3. ТАРАКАН ЗА БАРАБАННОЙ УСТАНОВКОЙ (центр-задний план) =====================
+    run {
+        val bx = w * 0.50f
+        val by = podiumY - 2f * u
+        val bounce = a.drumKick * 4.5f * u
+        val headBob = sin(a.phase * 2.2f) * (1.2f + drums * 2.6f) * u
+
+        // Тело таракана (выглядывает из-за барабанов): глянцевый каштановый сегментированный панцирь
+        val bodyCenterY = by - 58f * u - bounce * 0.4f + headBob * 0.3f
+        val shellDark = Color(0xFF4A210D)
+        val shellMid = Color(0xFF853E1B)
+        val shellHi = Color(0xFFB45A28)
+        drawOval(
+            Brush.radialGradient(listOf(shellHi, shellMid, shellDark), Offset(bx - 5f * u, bodyCenterY - 8f * u), 28f * u),
+            Offset(bx - 19f * u, bodyCenterY - 22f * u),
+            Size(38f * u, 44f * u),
+        )
+        // Сегменты панциря
+        for (seg in -1..1) {
+            val sy = bodyCenterY + seg * 8f * u
+            drawArc(
+                Color(0xFF2D1206).copy(alpha = 0.55f),
+                startAngle = 15f,
+                sweepAngle = 150f,
+                useCenter = false,
+                topLeft = Offset(bx - 16f * u, sy - 6f * u),
+                size = Size(32f * u, 12f * u),
+                style = Stroke(1.6f * u),
+            )
+        }
+
+        // Голова таракана + выразительные глаза + подвижные длинные усики
+        val hx = bx
+        val hy = bodyCenterY - 23f * u + headBob * 0.6f
+        drawOval(
+            Brush.radialGradient(listOf(shellHi, shellMid), Offset(hx - 3f * u, hy - 3f * u), 16f * u),
+            Offset(hx - 13f * u, hy - 11f * u),
+            Size(26f * u, 21f * u),
+        )
+        // Глаза таракана
+        drawCircle(Color.White, 4.2f * u, Offset(hx - 5.5f * u, hy - 2f * u))
+        drawCircle(Color.White, 4.2f * u, Offset(hx + 5.5f * u, hy - 2f * u))
+        drawCircle(Color(0xFF111827), 2.1f * u, Offset(hx - 5.0f * u, hy - 1.5f * u))
+        drawCircle(Color(0xFF111827), 2.1f * u, Offset(hx + 5.0f * u, hy - 1.5f * u))
+        drawCircle(Color.White, 0.9f * u, Offset(hx - 5.8f * u, hy - 2.6f * u))
+        drawCircle(Color.White, 0.9f * u, Offset(hx + 4.2f * u, hy - 2.6f * u))
+        // Забавная довольная ухмылка на бите
+        drawArc(
+            Color(0xFF1F0C04),
+            startAngle = 15f,
+            sweepAngle = 150f,
+            useCenter = false,
+            topLeft = Offset(hx - 5f * u, hy + 1.5f * u),
+            size = Size(10f * u, (4f + drums * 3f) * u),
+            style = Stroke(1.5f * u, cap = StrokeCap.Round),
+        )
+        // Длинные гнутые усики таракана (качаются в такт)
+        val antWave = sin(a.phase * 4.2f) * (3f + drums * 8f) * u
+        a.pathBack1.reset()
+        a.pathBack1.moveTo(hx - 6f * u, hy - 9f * u)
+        a.pathBack1.cubicTo(hx - 18f * u, hy - 30f * u, hx - 34f * u, hy - 28f * u + antWave, hx - 42f * u, hy - 16f * u - antWave)
+        drawPath(a.pathBack1, Color(0xFF9A4E24), style = Stroke(1.8f * u, cap = StrokeCap.Round))
+        a.pathBack2.reset()
+        a.pathBack2.moveTo(hx + 6f * u, hy - 9f * u)
+        a.pathBack2.cubicTo(hx + 18f * u, hy - 30f * u, hx + 34f * u, hy - 28f * u - antWave, hx + 42f * u, hy - 16f * u + antWave)
+        drawPath(a.pathBack2, Color(0xFF9A4E24), style = Stroke(1.8f * u, cap = StrokeCap.Round))
+
+        // Нижние суставчатые лапки по бокам панциря
+        for (side in listOf(-1f, 1f)) {
+            val shoulder = Offset(bx + side * 16f * u, bodyCenterY + 2f * u)
+            val knee = Offset(bx + side * 28f * u, bodyCenterY - 4f * u)
+            val foot = Offset(bx + side * 34f * u, bodyCenterY + 12f * u)
+            drawLine(shellDark, shoulder, knee, 2.2f * u, StrokeCap.Round)
+            drawLine(shellDark, knee, foot, 2.0f * u, StrokeCap.Round)
+        }
+
+        // ---- Барабанная установка ----
+        val cymbalTiltL = -8f - a.drumSnare * 18f
+        val cymbalTiltR = 8f + a.drumSnare * 18f
+        val standCol = Color(0xFF94A3B8)
+        val cymbalGold = Color(0xFFFBBF24)
+        val cymbalHi = Color(0xFFFEF08A)
+
+        // Левая тарелка (Hi-Hat) и правая тарелка (Crash) на стойках
+        val cymLX = bx - 48f * u
+        val cymLY = by - 58f * u
+        val cymRX = bx + 48f * u
+        val cymRY = by - 64f * u
+        drawLine(standCol, Offset(cymLX, by), Offset(cymLX, cymLY), 2.2f * u)
+        drawLine(standCol, Offset(cymRX, by), Offset(cymRX, cymRY), 2.2f * u)
+        // Треноги стоек
+        drawLine(standCol, Offset(cymLX, by - 8f * u), Offset(cymLX - 9f * u, by), 1.8f * u)
+        drawLine(standCol, Offset(cymLX, by - 8f * u), Offset(cymLX + 9f * u, by), 1.8f * u)
+        drawLine(standCol, Offset(cymRX, by - 8f * u), Offset(cymRX - 9f * u, by), 1.8f * u)
+        drawLine(standCol, Offset(cymRX, by - 8f * u), Offset(cymRX + 9f * u, by), 1.8f * u)
+
+        rotate(cymbalTiltL, Offset(cymLX, cymLY)) {
+            if (a.drumSnare > 0.25f) {
+                drawCircle(Brush.radialGradient(listOf(cymbalHi.copy(alpha = 0.45f * a.drumSnare), Color.Transparent), Offset(cymLX, cymLY), 22f * u), 22f * u, Offset(cymLX, cymLY))
+            }
+            drawOval(Brush.horizontalGradient(listOf(Color(0xFFD97706), cymbalHi, cymbalGold)), Offset(cymLX - 19f * u, cymLY - 4.5f * u), Size(38f * u, 9f * u))
+        }
+        rotate(cymbalTiltR, Offset(cymRX, cymRY)) {
+            if (a.drumSnare > 0.25f) {
+                drawCircle(Brush.radialGradient(listOf(cymbalHi.copy(alpha = 0.50f * a.drumSnare), Color.Transparent), Offset(cymRX, cymRY), 25f * u), 25f * u, Offset(cymRX, cymRY))
+            }
+            drawOval(Brush.horizontalGradient(listOf(cymbalGold, cymbalHi, Color(0xFFD97706))), Offset(cymRX - 22f * u, cymRY - 5f * u), Size(44f * u, 10f * u))
+        }
+
+        // Малый барабан (слева) и напольный том (справа)
+        val snarePos = Offset(bx - 30f * u, by - 30f * u)
+        drawRoundRect(Color(0xFF1E3A8A), Offset(snarePos.x - 13f * u, snarePos.y), Size(26f * u, 16f * u), CornerRadius(4f * u))
+        drawOval(Color(0xFFE2E8F0), Offset(snarePos.x - 13f * u, snarePos.y - 4f * u), Size(26f * u, 8f * u))
+        drawOval(Color(0xFF94A3B8), Offset(snarePos.x - 13f * u, snarePos.y - 4f * u), Size(26f * u, 8f * u), style = Stroke(1.6f * u))
+
+        val tomPos = Offset(bx + 30f * u, by - 28f * u)
+        drawRoundRect(Color(0xFF1E3A8A), Offset(tomPos.x - 14f * u, tomPos.y), Size(28f * u, 20f * u), CornerRadius(4f * u))
+        drawOval(Color(0xFFE2E8F0), Offset(tomPos.x - 14f * u, tomPos.y - 4.5f * u), Size(28f * u, 9f * u))
+        drawOval(Color(0xFF94A3B8), Offset(tomPos.x - 14f * u, tomPos.y - 4.5f * u), Size(28f * u, 9f * u), style = Stroke(1.6f * u))
+
+        // Большая бочка (Bass Drum) по центру — пульсирует и вибрирует от удара!
+        val kickR = (24f + a.drumKick * 3.8f) * u
+        val kickCenter = Offset(bx, by - kickR + 2f * u)
+        if (a.drumKick > 0.15f) {
+            drawCircle(
+                Brush.radialGradient(listOf(drumCol.copy(alpha = 0.42f * a.drumKick), Color.Transparent), kickCenter, kickR * 1.65f),
+                kickR * 1.65f,
+                kickCenter,
+            )
+            drawCircle(drumCol.copy(alpha = 0.55f * a.drumKick), kickR * (1.08f + a.drumKick * 0.25f), kickCenter, style = Stroke(2.2f * u))
+        }
+        drawCircle(Color(0xFF0F172A), kickR, kickCenter)
+        drawCircle(Color(0xFF1E293B), kickR * 0.88f, kickCenter)
+        drawCircle(Color(0xFFE2E8F0), kickR, kickCenter, style = Stroke(3.2f * u))
+        drawCircle(drumCol.copy(alpha = 0.55f + a.drumKick * 0.45f), kickR * 0.72f, kickCenter, style = Stroke(1.5f * u))
+        // Молния на мембране бочки
+        a.pathMain.reset()
+        a.pathMain.moveTo(kickCenter.x + 2f * u, kickCenter.y - 10f * u)
+        a.pathMain.lineTo(kickCenter.x - 5f * u, kickCenter.y + 1f * u)
+        a.pathMain.lineTo(kickCenter.x + 1f * u, kickCenter.y + 1f * u)
+        a.pathMain.lineTo(kickCenter.x - 3f * u, kickCenter.y + 10f * u)
+        a.pathMain.lineTo(kickCenter.x + 6f * u, kickCenter.y - 2f * u)
+        a.pathMain.lineTo(kickCenter.x, kickCenter.y - 2f * u)
+        a.pathMain.close()
+        drawPath(a.pathMain, Color(0xFFFACC15).copy(alpha = 0.75f + a.drumKick * 0.25f))
+
+        // Верхние лапы таракана + барабанные палочки, реально стучащие в такт!
+        val lArmBase = Offset(bx - 14f * u, bodyCenterY - 8f * u)
+        val rArmBase = Offset(bx + 14f * u, bodyCenterY - 8f * u)
+        val lHand = Offset(bx - 26f * u, bodyCenterY + (4f - a.drumLeftStick * 12f) * u)
+        val rHand = Offset(bx + 26f * u, bodyCenterY + (4f - a.drumRightStick * 12f) * u)
+        drawLine(shellMid, lArmBase, lHand, 2.8f * u, StrokeCap.Round)
+        drawLine(shellMid, rArmBase, rHand, 2.8f * u, StrokeCap.Round)
+
+        // Палочки (при ударе опускаются точно к мембране барабана/тарелки и высекают искру!)
+        val stickCol = Color(0xFFFDE68A)
+        val lTip = Offset(
+            snarePos.x + (1f - a.drumLeftStick) * 4f * u,
+            snarePos.y - (18f - a.drumLeftStick * 16f) * u,
+        )
+        val rTip = Offset(
+            if (a.drumSnare > 0.35f) cymRX - 10f * u else tomPos.x - 4f * u,
+            if (a.drumSnare > 0.35f) cymRY + 2f * u else tomPos.y - (18f - a.drumRightStick * 16f) * u,
+        )
+        drawLine(stickCol, lHand, lTip, 2.4f * u, StrokeCap.Round)
+        drawLine(stickCol, rHand, rTip, 2.4f * u, StrokeCap.Round)
+        drawCircle(Color.White, 2.2f * u, lTip)
+        drawCircle(Color.White, 2.2f * u, rTip)
+
+        // Искры при ударе палочкой
+        if (a.drumLeftStick > 0.55f) {
+            drawCircle(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.85f * a.drumLeftStick), drumCol.copy(alpha = 0.3f), Color.Transparent), lTip, 12f * u), 12f * u, lTip)
+        }
+        if (a.drumRightStick > 0.55f) {
+            drawCircle(Brush.radialGradient(listOf(Color.White.copy(alpha = 0.85f * a.drumRightStick), drumCol.copy(alpha = 0.3f), Color.Transparent), rTip, 13f * u), 13f * u, rTip)
+        }
+    }
+
+    // ===================== 4. ШОТЛАНДСКИЙ ВИСЛОУХИЙ КОТ С МИКРОФОНОМ (слева-впереди) =====================
+    run {
+        val cx = w * 0.21f
+        val floor = stageFloorY + 4f * u
+        val sway = sin(a.phase * 1.8f) * (1.2f + vocal * 3.5f) * u
+        val catFur = Color(0xFF8C99AE)
+        val catFurDark = Color(0xFF5D697D)
+        val catBelly = Color(0xFFDCE3EE)
+
+        // Пушистый хвостик позади кота
+        val tailWag = sin(a.phase * 2.6f) * (5f + vocal * 7f) * u
+        a.pathBack1.reset()
+        a.pathBack1.moveTo(cx - 14f * u, floor - 14f * u)
+        a.pathBack1.cubicTo(cx - 34f * u, floor - 16f * u, cx - 40f * u, floor - 36f * u + tailWag, cx - 30f * u, floor - 48f * u + tailWag)
+        drawPath(a.pathBack1, catFurDark, style = Stroke(7.5f * u, cap = StrokeCap.Round))
+        drawPath(a.pathBack1, catFur, style = Stroke(5.0f * u, cap = StrokeCap.Round))
+
+        // Плюшевое тельце кота
+        val bodyY = floor - 28f * u
+        drawOval(
+            Brush.radialGradient(listOf(catFur, catFurDark), Offset(cx - 4f * u, bodyY - 8f * u), 30f * u),
+            Offset(cx - 20f * u, bodyY - 22f * u),
+            Size(40f * u, 46f * u),
+        )
+        // Светлая грудка
+        drawOval(catBelly.copy(alpha = 0.85f), Offset(cx - 10f * u, bodyY - 12f * u), Size(20f * u, 28f * u))
+        // Лапки внизу
+        drawOval(catFur, Offset(cx - 16f * u, floor - 9f * u), Size(13f * u, 9f * u))
+        drawOval(catFur, Offset(cx + 3f * u, floor - 9f * u), Size(13f * u, 9f * u))
+
+        // Круглая голова шотландского вислоухого кота (наклоняется к микрофону при пении!)
+        val hx = cx + sway * 0.7f + vocal * 3.5f * u
+        val hy = bodyY - 34f * u - vocal * 2.5f * u
+        val headR = 23f * u
+
+        // Характерные ВИСЯЧИЕ УШКИ шотландского вислоухого кота (сложены вперёд и вниз по бокам макушки!)
+        a.pathMain.reset()
+        a.pathMain.moveTo(hx - headR * 0.72f, hy - headR * 0.58f)
+        a.pathMain.cubicTo(hx - headR * 1.18f, hy - headR * 0.82f, hx - headR * 1.24f, hy - headR * 0.12f, hx - headR * 0.82f, hy + headR * 0.02f)
+        a.pathMain.close()
+        drawPath(a.pathMain, catFurDark)
+        a.pathMain.reset()
+        a.pathMain.moveTo(hx + headR * 0.72f, hy - headR * 0.58f)
+        a.pathMain.cubicTo(hx + headR * 1.18f, hy - headR * 0.82f, hx + headR * 1.24f, hy - headR * 0.12f, hx + headR * 0.82f, hy + headR * 0.02f)
+        a.pathMain.close()
+        drawPath(a.pathMain, catFurDark)
+
+        // Круглая плюшевая голова
+        drawCircle(
+            Brush.radialGradient(listOf(Color(0xFFA7B3C7), catFur, catFurDark), Offset(hx - 6f * u, hy - 8f * u), headR * 1.2f),
+            headR,
+            Offset(hx, hy),
+        )
+        // Повторно кончики висячих ушек чуть поверх края головы (узнаваемый сгиб Scottish Fold!)
+        drawOval(catFurDark, Offset(hx - headR * 1.12f, hy - headR * 0.52f), Size(11f * u, 13f * u))
+        drawOval(catFurDark, Offset(hx + headR * 0.65f, hy - headR * 0.52f), Size(11f * u, 13f * u))
+
+        // Большие круглые янтарные глаза (при громком пении счастливо прищуриваются!)
+        val eyeLX = hx - 8.5f * u
+        val eyeRX = hx + 8.5f * u
+        val eyeY = hy - 2f * u
+        if (vocal > 0.62f) {
+            drawArc(Color(0xFF1E293B), 200f, 140f, false, Offset(eyeLX - 5.5f * u, eyeY - 3f * u), Size(11f * u, 8f * u), style = Stroke(2.2f * u, cap = StrokeCap.Round))
+            drawArc(Color(0xFF1E293B), 200f, 140f, false, Offset(eyeRX - 5.5f * u, eyeY - 3f * u), Size(11f * u, 8f * u), style = Stroke(2.2f * u, cap = StrokeCap.Round))
+        } else {
+            drawCircle(Color(0xFFF59E0B), 5.6f * u, Offset(eyeLX, eyeY))
+            drawCircle(Color(0xFFF59E0B), 5.6f * u, Offset(eyeRX, eyeY))
+            drawCircle(Color(0xFF0F172A), 3.2f * u, Offset(eyeLX + 0.5f * u, eyeY))
+            drawCircle(Color(0xFF0F172A), 3.2f * u, Offset(eyeRX + 0.5f * u, eyeY))
+            drawCircle(Color.White, 1.4f * u, Offset(eyeLX - 1.4f * u, eyeY - 1.6f * u))
+            drawCircle(Color.White, 1.4f * u, Offset(eyeRX - 1.4f * u, eyeY - 1.6f * u))
+        }
+
+        // Пухлые светлые щёчки и розовый носик
+        drawCircle(catBelly, 5.2f * u, Offset(hx - 4.5f * u, hy + 7.5f * u))
+        drawCircle(catBelly, 5.2f * u, Offset(hx + 4.5f * u, hy + 7.5f * u))
+        a.pathMain.reset()
+        a.pathMain.moveTo(hx - 3.2f * u, hy + 4.2f * u)
+        a.pathMain.lineTo(hx + 3.2f * u, hy + 4.2f * u)
+        a.pathMain.lineTo(hx, hy + 7.4f * u)
+        a.pathMain.close()
+        drawPath(a.pathMain, Color(0xFFF472B6))
+
+        // Усики кота
+        val wCol = Color(0xFFE2E8F0).copy(alpha = 0.7f)
+        for (k in -1..1) {
+            drawLine(wCol, Offset(hx - 10f * u, hy + (6 + k * 2.5f) * u), Offset(hx - 24f * u, hy + (5 + k * 4.5f) * u), 1.1f * u)
+            drawLine(wCol, Offset(hx + 10f * u, hy + (6 + k * 2.5f) * u), Offset(hx + 24f * u, hy + (5 + k * 4.5f) * u), 1.1f * u)
+        }
+
+        // Ротик кота: открывается ТОЛЬКО когда звучат вокальные частоты!
+        if (a.vocalMouth > 0.08f) {
+            val mw = (6f + a.vocalMouth * 5.5f) * u
+            val mh = (3.5f + a.vocalMouth * 10f) * u
+            drawOval(Color(0xFF881337), Offset(hx - mw * 0.5f, hy + 8.5f * u), Size(mw, mh))
+            drawOval(Color(0xFFFB7185), Offset(hx - mw * 0.34f, hy + 8.5f * u + mh * 0.55f), Size(mw * 0.68f, mh * 0.42f))
+        } else {
+            drawArc(Color(0xFF334155), 15f, 150f, false, Offset(hx - 4.5f * u, hy + 7f * u), Size(9f * u, 5f * u), style = Stroke(1.4f * u, cap = StrokeCap.Round))
+        }
+
+        // Стойка и ретро-микрофон перед котом
+        val micX = cx + 28f * u
+        val micHeadY = hy + 6f * u
+        drawLine(Color(0xFF64748B), Offset(micX, floor), Offset(micX, micHeadY + 6f * u), 2.4f * u)
+        drawOval(Color(0xFF475569), Offset(micX - 11f * u, floor - 3f * u), Size(22f * u, 6f * u))
+        // Лапка кота на микрофонной стойке
+        drawLine(catFur, Offset(cx + 12f * u, bodyY - 4f * u), Offset(micX - 1f * u, micHeadY + 14f * u), 5.5f * u, StrokeCap.Round)
+        // Капсюль ретро-микрофона
+        if (vocal > 0.14f) {
+            drawCircle(
+                Brush.radialGradient(listOf(catCol.copy(alpha = 0.48f * vocal), Color.Transparent), Offset(micX, micHeadY), 18f * u),
+                18f * u,
+                Offset(micX, micHeadY),
+            )
+        }
+        drawRoundRect(
+            Brush.verticalGradient(listOf(Color(0xFFE2E8F0), Color(0xFF94A3B8)), micHeadY - 8f * u, micHeadY + 6f * u),
+            Offset(micX - 5.5f * u, micHeadY - 8f * u),
+            Size(11f * u, 14f * u),
+            CornerRadius(5.5f * u),
+        )
+        drawLine(Color(0xFF334155), Offset(micX - 5f * u, micHeadY - 1f * u), Offset(micX + 5f * u, micHeadY - 1f * u), 1.3f * u)
+
+        // Летящие вверх светящиеся музыкальные нотки ♪ пока кот поёт!
+        if (vocal > 0.14f) {
+            for (nIdx in 0..2) {
+                val prog = ((a.vocalNotePhase * 0.55f + nIdx * 0.33f) % 1f)
+                val nAlpha = sin(prog * PI.toFloat()) * (0.35f + vocal * 0.65f)
+                val nx = micX + (6f + nIdx * 6f + sin(prog * 5f + nIdx) * 8f) * u
+                val ny = micHeadY - (12f + prog * 54f) * u
+                val nCol = lerp(catCol, Color.White, 0.35f).copy(alpha = nAlpha.coerceIn(0f, 1f))
+                drawOval(nCol, Offset(nx - 4f * u, ny - 2.5f * u), Size(6.5f * u, 5f * u))
+                drawLine(nCol, Offset(nx + 2f * u, ny), Offset(nx + 2f * u, ny - 12f * u), 1.8f * u, StrokeCap.Round)
+                drawLine(nCol, Offset(nx + 2f * u, ny - 12f * u), Offset(nx + 7.5f * u, ny - 9f * u), 1.8f * u, StrokeCap.Round)
+            }
+        }
+    }
+
+    // ===================== 5. БЕЛЫЙ КРЫС С ЭЛЕКТРОГИТАРОЙ (справа-впереди) =====================
+    run {
+        val rx = w * 0.79f
+        val floor = stageFloorY + 4f * u
+        val groove = sin(a.guitarPhase * 0.5f) * (1.2f + guitar * 4f) * u
+        val ratWhite = Color(0xFFF8FAFC)
+        val ratShade = Color(0xFFCBD5E1)
+        val ratPink = Color(0xFFFDA4AF)
+
+        // Длинный изогнутый розовый хвост белого крыса (ритмично виляет на гитарных риффах!)
+        val tailSwing = sin(a.guitarPhase * 0.6f + 1f) * (4f + guitar * 9f) * u
+        a.pathBack1.reset()
+        a.pathBack1.moveTo(rx + 14f * u, floor - 14f * u)
+        a.pathBack1.cubicTo(rx + 36f * u, floor - 8f * u, rx + 42f * u, floor - 34f * u + tailSwing, rx + 28f * u, floor - 52f * u + tailSwing)
+        drawPath(a.pathBack1, ratPink, style = Stroke(3.6f * u, cap = StrokeCap.Round))
+
+        // Белое тельце крыса
+        val bodyY = floor - 28f * u
+        drawOval(
+            Brush.radialGradient(listOf(ratWhite, ratShade), Offset(rx - 4f * u, bodyY - 8f * u), 28f * u),
+            Offset(rx - 18f * u, bodyY - 22f * u),
+            Size(36f * u, 46f * u),
+        )
+        // Розовые лапки внизу
+        drawOval(ratPink, Offset(rx - 14f * u, floor - 8f * u), Size(12f * u, 7.5f * u))
+        drawOval(ratPink, Offset(rx + 2f * u, floor - 8f * u), Size(12f * u, 7.5f * u))
+
+        // Голова белого крыса: вытянутая острая мордочка, круглые розовые ушки, розовый носик!
+        val hx = rx - 2f * u + groove * 0.5f
+        val hy = bodyY - 33f * u - a.guitarStrum * 3f * u
+
+        // Большие круглые розовые ушки
+        drawCircle(ratShade, 10.5f * u, Offset(hx + 2f * u, hy - 14f * u))
+        drawCircle(ratPink, 7.2f * u, Offset(hx + 2f * u, hy - 14f * u))
+        drawCircle(ratWhite, 10.5f * u, Offset(hx + 14f * u, hy - 10f * u))
+        drawCircle(ratPink, 7.2f * u, Offset(hx + 14f * u, hy - 10f * u))
+
+        // Вытянутая клиновидная белая мордочка (смотрит влево к центру сцены)
+        a.pathMain.reset()
+        a.pathMain.moveTo(hx - 26f * u, hy + 3f * u) // острый кончик носа
+        a.pathMain.cubicTo(hx - 14f * u, hy - 14f * u, hx + 14f * u, hy - 16f * u, hx + 17f * u, hy + 2f * u)
+        a.pathMain.cubicTo(hx + 16f * u, hy + 16f * u, hx - 8f * u, hy + 14f * u, hx - 26f * u, hy + 3f * u)
+        a.pathMain.close()
+        drawPath(a.pathMain, Brush.radialGradient(listOf(ratWhite, ratShade), Offset(hx - 4f * u, hy - 4f * u), 28f * u))
+
+        // Розовый носик на самом кончике + усики + выразительный глазик
+        drawCircle(Color(0xFFFB7185), 3.4f * u, Offset(hx - 26f * u, hy + 3f * u))
+        drawCircle(Color(0xFF1E1B4B), 3.4f * u, Offset(hx - 5f * u, hy - 2.5f * u))
+        drawCircle(Color.White, 1.2f * u, Offset(hx - 6f * u, hy - 3.6f * u))
+        val rwCol = Color(0xFF94A3B8).copy(alpha = 0.7f)
+        drawLine(rwCol, Offset(hx - 22f * u, hy + 4f * u), Offset(hx - 35f * u, hy), 1.1f * u)
+        drawLine(rwCol, Offset(hx - 22f * u, hy + 5f * u), Offset(hx - 34f * u, hy + 7f * u), 1.1f * u)
+
+        // ---- Электрогитара в лапах белого крыса ----
+        val gCenter = Offset(rx - 4f * u, bodyY + 2f * u)
+        val gAngle = -24f - a.guitarStrum * 8f + sin(a.guitarPhase * 0.5f) * guitar * 4f
+        rotate(gAngle, gCenter) {
+            // Электрическое свечение деки на гитарных частотах
+            if (guitar > 0.14f) {
+                drawCircle(
+                    Brush.radialGradient(listOf(ratCol.copy(alpha = 0.45f * guitar), Color.Transparent), gCenter, 34f * u),
+                    34f * u,
+                    gCenter,
+                )
+            }
+            // Корпус электрогитары (стильная красная дека + белый пикгард)
+            drawOval(Color(0xFFDC2626), Offset(gCenter.x - 4f * u, gCenter.y - 14f * u), Size(28f * u, 28f * u))
+            drawOval(Color(0xFFEF4444), Offset(gCenter.x - 16f * u, gCenter.y - 11f * u), Size(22f * u, 22f * u))
+            drawOval(Color(0xFFF8FAFC).copy(alpha = 0.92f), Offset(gCenter.x - 6f * u, gCenter.y - 8f * u), Size(16f * u, 16f * u))
+            // Длинный гриф влево + голова грифа с колками
+            drawRoundRect(Color(0xFF78350F), Offset(gCenter.x - 52f * u, gCenter.y - 3.6f * u), Size(44f * u, 7.2f * u), CornerRadius(2f * u))
+            drawRoundRect(Color(0xFFDC2626), Offset(gCenter.x - 62f * u, gCenter.y - 5.5f * u), Size(12f * u, 10.5f * u), CornerRadius(3f * u))
+            // Звукосниматель и бридж
+            drawRect(Color(0xFF0F172A), Offset(gCenter.x + 2f * u, gCenter.y - 6f * u), Size(4.5f * u, 12f * u))
+            drawRect(Color(0xFF94A3B8), Offset(gCenter.x + 11f * u, gCenter.y - 5f * u), Size(3f * u, 10f * u))
+
+            // 4 струны — вибрируют и светятся при гитарных частотах!
+            val vib = sin(a.guitarPhase * 3.5f) * a.guitarStrum * 1.8f * u
+            val strCol = lerp(Color(0xFFE2E8F0), ratCol, guitar * 0.7f)
+            for (s in 0..3) {
+                val sy = gCenter.y - 2.4f * u + s * 1.6f * u
+                drawLine(strCol, Offset(gCenter.x - 56f * u, sy), Offset(gCenter.x + 12f * u, sy + (if (s % 2 == 0) vib else -vib)), 0.9f * u)
+            }
+
+            // Левая лапка на грифе (скользит вдоль ладов!)
+            val fretX = gCenter.x - (22f + sin(a.guitarPhase * 0.7f) * guitar * 14f) * u
+            drawCircle(ratPink, 4.2f * u, Offset(fretX, gCenter.y + 3f * u))
+
+            // Правая лапка (ритмично бьёт по струнам!)
+            val strumY = gCenter.y + sin(a.guitarPhase * 1.6f) * (2f + guitar * 7f + a.guitarStrum * 4f) * u
+            drawCircle(ratWhite, 4.5f * u, Offset(gCenter.x + 5f * u, strumY))
+            drawCircle(ratPink, 3.2f * u, Offset(gCenter.x + 4f * u, strumY))
+
+            // Искры/волны от гитары на аккордах
+            if (a.guitarStrum > 0.25f) {
+                drawArc(
+                    ratCol.copy(alpha = 0.75f * a.guitarStrum),
+                    startAngle = -55f,
+                    sweepAngle = 110f,
+                    useCenter = false,
+                    topLeft = Offset(gCenter.x - 18f * u, gCenter.y - 22f * u),
+                    size = Size(44f * u, 44f * u),
+                    style = Stroke(2.2f * u, cap = StrokeCap.Round),
+                )
+            }
+        }
+    }
+
+    // ===================== 6. Три тонких частотных индикатора на переднем крае сцены =====================
+    val indY = h * 0.93f
+    val indW = w * 0.22f
+    listOf(
+        Triple(w * 0.21f, vocal, catCol),
+        Triple(w * 0.50f, drums, drumCol),
+        Triple(w * 0.79f, guitar, ratCol),
+    ).forEach { (ix, lvl, col) ->
+        drawRoundRect(Color.White.copy(alpha = 0.08f), Offset(ix - indW * 0.5f, indY), Size(indW, 3.5f * u), CornerRadius(2f * u))
+        if (lvl > 0.03f) {
+            drawRoundRect(
+                Brush.horizontalGradient(listOf(col.copy(alpha = 0.6f), Color.White.copy(alpha = 0.9f)), ix - indW * 0.5f, ix - indW * 0.5f + indW * lvl),
+                Offset(ix - indW * 0.5f, indY),
+                Size((indW * lvl).coerceAtLeast(3f * u), 3.5f * u),
+                CornerRadius(2f * u),
+            )
         }
     }
 }

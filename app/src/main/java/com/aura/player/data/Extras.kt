@@ -270,3 +270,49 @@ object StatsStore {
     fun sortedList(map: Map<String, TrackStat>): List<TrackStat> =
         map.values.sortedWith(compareByDescending<TrackStat> { it.plays }.thenByDescending { it.listenSec })
 }
+
+/** Пользовательские текстовые заметки, привязанные к аудиофайлам (работают и для телефона, и для SD-карты). */
+object TrackNotesStore {
+    private fun file(context: Context) = File(context.filesDir, "track_notes.json")
+
+    @Synchronized
+    fun loadAll(context: Context): Map<String, String> {
+        val out = LinkedHashMap<String, String>()
+        try {
+            val f = file(context)
+            if (!f.exists()) return out
+            val obj = JSONObject(f.readText())
+            val keys = obj.keys()
+            while (keys.hasNext()) {
+                val k = keys.next()
+                val v = obj.optString(k)
+                if (v.isNotBlank()) out[k] = v
+            }
+        } catch (_: Exception) {
+        }
+        return out
+    }
+
+    @Synchronized
+    fun save(context: Context, uri: String, note: String): Map<String, String> {
+        val map = LinkedHashMap(loadAll(context))
+        val clean = note.trim()
+        if (clean.isBlank()) map.remove(uri) else map[uri] = clean
+        write(context, map)
+        return map
+    }
+
+    @Synchronized
+    fun remove(context: Context, uri: String): Map<String, String> {
+        val map = LinkedHashMap(loadAll(context))
+        map.remove(uri)
+        write(context, map)
+        return map
+    }
+
+    private fun write(context: Context, map: Map<String, String>) {
+        val obj = JSONObject()
+        map.forEach { (k, v) -> obj.put(k, v) }
+        runCatching { file(context).writeText(obj.toString()) }
+    }
+}
